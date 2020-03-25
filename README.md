@@ -8,4 +8,4 @@ An [external sorting](https://en.wikipedia.org/wiki/External_sorting) library fo
 
 extsort supports sorting items that can be marshalled to/from `[]byte` as defined in the `SortType` interface
 
-EXTSORT is not a [stable sort](https://en.wikipedia.org/wiki/Sorting_algorithm#Stability).
+extsort is not a [stable sort](https://en.wikipedia.org/wiki/Sorting_algorithm#Stability).
