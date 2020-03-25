@@ -205,8 +205,8 @@ type mergeFile struct {
 	fromBytes FromBytes
 }
 
-// getNext returns the next value from teh sorted chunk on disk
-// the first call will return nil while the struct is initalized
+// getNext returns the next value from the sorted chunk on disk
+// the first call will return nil while the struct is initialized
 func (m *mergeFile) getNext() (SortType, bool, error) {
 	var newRecBytes []byte
 	old := m.nextRec
