@@ -1,11 +1,9 @@
-// Package extsort implements an unstable external sort for all the records in a chan
-// TODO
-
+// Package extsort implements an unstable external sort for all the records in a chan or iterator
 package extsort
 
 import (
 	"bufio"
-	"encoding/gob"
+	"encoding/binary"
 	"io"
 	"io/ioutil"
 	"os"
@@ -46,7 +44,6 @@ type Sorter struct {
 	config             Config
 	input              chan SortType
 	chunkChan          chan *chunk
-	chunkChanSorted    chan *chunk
 	mergeFileList      []string
 	mergeFileListMutex sync.Mutex
 	lessFunc           CompareLessFunc
@@ -67,7 +64,6 @@ func New(i chan SortType, fromBytes FromBytes, lessFunc CompareLessFunc, config 
 	s.fromBytes = fromBytes
 	s.config = *mergeConfig(config)
 	s.chunkChan = make(chan *chunk, s.config.ChanBuffSize)
-	s.chunkChanSorted = make(chan *chunk, s.config.ChanBuffSize)
 	s.mergeFileList = make([]string, 0, 1)
 	s.mergeChunkChan = make(chan SortType, s.config.SortedChanBuffSize)
 	s.mergeErrChan = make(chan error, 1)
@@ -82,28 +78,9 @@ func (s *Sorter) Sort() (chan SortType, chan error) {
 	//start saving chunks
 	errGroup.Go(s.buildChunks)
 
-	//start sorting workers
-	errGroup.Go(func() error {
-		var sortErrGroup errgroup.Group
-		//start sortworkers
-		for i := 0; i < s.config.NumSortWorkers; i++ {
-			sortErrGroup.Go(s.sortChunks)
-		}
-
-		err := sortErrGroup.Wait()
-		close(s.chunkChanSorted)
-		return err
-	})
-
-	// start saving workers
-	errGroup.Go(func() error {
-		var saveErrGroup errgroup.Group
-		// start saveworkers
-		for i := 0; i < s.config.NumSaveWorkers; i++ {
-			saveErrGroup.Go(s.saveChunks)
-		}
-		return saveErrGroup.Wait()
-	})
+	for i := 0; i < s.config.NumWorkers; i++ {
+		errGroup.Go(s.sortChunksToDisk)
+	}
 
 	err := errGroup.Wait()
 	if err != nil {
@@ -146,35 +123,31 @@ func (s *Sorter) buildChunks() error {
 }
 
 // sortChunks is a worker for sorting the data stored in a chunk prior to save
-func (s *Sorter) sortChunks() error {
+func (s *Sorter) sortChunksToDisk() error {
+	scratch := make([]byte, binary.MaxVarintLen64)
 	for {
 		b, more := <-s.chunkChan
 		if more {
+			// sort
 			sort.Sort(b)
-			s.chunkChanSorted <- b
-		} else {
-			break
-		}
-	}
-	return nil
-}
-
-// saveChunks is a worker that takes the sorted chunks and saves them to disk
-func (s *Sorter) saveChunks() error {
-	for {
-		b, more := <-s.chunkChanSorted
-		if more {
+			// save
 			// create temp file
-			f, err := ioutil.TempFile(s.config.TempFilesDir, s.config.MergeFilenamePrefix)
+			f, err := ioutil.TempFile(s.config.TempFilesDir, mergeFilenamePrefix)
 			if err != nil {
 				return err
 			}
 			fName := f.Name()
 
-			bufWriter := bufio.NewWriterSize(f, s.config.FileSortBufferSize)
-			enc := gob.NewEncoder(bufWriter)
+			bufWriter := bufio.NewWriterSize(f, fileSortBufferSize)
 			for _, d := range b.data {
-				err = enc.Encode(d.ToBytes())
+				// binary encoding
+				raw := d.ToBytes()
+				n := binary.PutUvarint(scratch, uint64(len(raw)))
+				_, err = bufWriter.Write(scratch[:n])
+				if err != nil {
+					return err
+				}
+				_, err = bufWriter.Write(d.ToBytes())
 				if err != nil {
 					return err
 				}
@@ -202,8 +175,8 @@ func (s *Sorter) saveChunks() error {
 type mergeFile struct {
 	nextRec   SortType
 	file      *os.File
-	decoder   *gob.Decoder
 	fromBytes FromBytes
+	reader    *bufio.Reader
 }
 
 // getNext returns the next value from the sorted chunk on disk
@@ -212,7 +185,13 @@ func (m *mergeFile) getNext() (SortType, bool, error) {
 	var newRecBytes []byte
 	old := m.nextRec
 
-	err := m.decoder.Decode(&newRecBytes)
+	//err := m.decoder.Decode(&newRecBytes)
+	//bsm testing
+	n, err := binary.ReadUvarint(m.reader)
+	if err == nil {
+		newRecBytes = make([]byte, int(n))
+		_, err = io.ReadFull(m.reader, newRecBytes)
+	}
 	if err != nil {
 		if err == io.EOF {
 			m.nextRec = nil
@@ -260,8 +239,8 @@ func (s *Sorter) mergeNChunks() {
 			s.mergeErrChan <- err
 			return
 		}
-		merge.decoder = gob.NewDecoder(bufio.NewReaderSize(merge.file, s.config.FileSortBufferSize))
-		_, _, err = merge.getNext() // start the merge by preloading the values
+		merge.reader = bufio.NewReaderSize(merge.file, fileSortBufferSize)
+		_, _, err := merge.getNext() // start the merge by preloading the values
 		if err != nil {
 			s.mergeErrChan <- err
 			return
