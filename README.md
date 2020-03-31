@@ -6,7 +6,7 @@
 
 An [external sorting](https://en.wikipedia.org/wiki/External_sorting) library for golang (i.e. on disk sorting) on an arbitrarily channel, even if the generated content doesn't all fit in memory at once. Once sorted, it returns a new channel returning data in sorted order.
 
-In order to remain efficient for all implementations, extsort doesn't handle serialization, but leaves that to the user by operating on objects that implement the `SortType.ToBytes` and `FromBytes` interfaces.
+In order to remain efficient for all implementations, extsort doesn't handle serialization, but leaves that to the user by operating on types that implement the [`SortType.ToBytes`](https://godoc.org/github.com/lanrat/extsort#SortType) and [`FromBytes`](https://godoc.org/github.com/lanrat/extsort#FromBytes) interfaces.
 
 extsort is not a [stable sort](https://en.wikipedia.org/wiki/Sorting_algorithm#Stability).
 
@@ -80,3 +80,7 @@ func main() {
 ## Tuning
 
 The number of temporary files creates will be (total number of records) / (`ChunkSize`). If this is larger than the open file handle limit (`ulimit -n`) then the sort will fail and you should increase `ChunkSize` to reduce the number of temporary files used.
+
+## TODO
+
+* parallelize merging after sorting
