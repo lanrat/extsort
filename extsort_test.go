@@ -38,7 +38,7 @@ func sortForTest(inputData []val, lessFunc CompareLessFunc) error {
 	}()
 	config := DefaultConfig()
 	config.ChunkSize = len(inputData)/20 + 100
-	sort := New(context.Background(), inputChan, fromBytesForTest, lessFunc, config)
+	sort := NewContext(context.Background(), inputChan, fromBytesForTest, lessFunc, config)
 	outChan, errChan := sort.Sort()
 	i := 0
 	for {
