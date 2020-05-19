@@ -4,6 +4,7 @@ package extsort
 // https://github.com/psilva261/timsort/blob/master/timsort_test.go
 
 import (
+	"context"
 	"encoding/json"
 	"math/rand"
 	"testing"
@@ -37,7 +38,7 @@ func sortForTest(inputData []val, lessFunc CompareLessFunc) error {
 	}()
 	config := DefaultConfig()
 	config.ChunkSize = len(inputData)/20 + 100
-	sort := New(inputChan, fromBytesForTest, lessFunc, config)
+	sort := New(context.Background(), inputChan, fromBytesForTest, lessFunc, config)
 	outChan, errChan := sort.Sort()
 	i := 0
 	for {

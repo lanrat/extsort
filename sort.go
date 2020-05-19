@@ -3,6 +3,7 @@ package extsort
 
 import (
 	"bufio"
+	"context"
 	"encoding/binary"
 	"io"
 	"io/ioutil"
@@ -42,6 +43,7 @@ func (c *chunk) Less(i, j int) bool {
 // Sorter stores an input chan and feeds Sort to return a sorted chan
 type Sorter struct {
 	config             Config
+	ctx                context.Context
 	input              chan SortType
 	chunkChan          chan *chunk
 	mergeFileList      []string
@@ -57,9 +59,10 @@ type Sorter struct {
 // lessfunc is the comparator used for SortType
 // config ca be nil to use the defaults, or only set the non-default values desired
 // if errors or interupted, may leave temp files behind in config.TempFilesDir
-func New(i chan SortType, fromBytes FromBytes, lessFunc CompareLessFunc, config *Config) *Sorter {
+func New(ctx context.Context, i chan SortType, fromBytes FromBytes, lessFunc CompareLessFunc, config *Config) *Sorter {
 	s := new(Sorter)
 	s.input = i
+	s.ctx = ctx
 	s.lessFunc = lessFunc
 	s.fromBytes = fromBytes
 	s.config = *mergeConfig(config)
@@ -73,7 +76,8 @@ func New(i chan SortType, fromBytes FromBytes, lessFunc CompareLessFunc, config 
 // Sort sorts the Sorter's input chan and returns a new sorted chan, and error Chan
 // Sort is a chunking operation that runs multiple workers asynchronously
 func (s *Sorter) Sort() (chan SortType, chan error) {
-	var errGroup errgroup.Group
+	var errGroup *errgroup.Group
+	errGroup, s.ctx = errgroup.WithContext(s.ctx)
 
 	//start saving chunks
 	errGroup.Go(s.buildChunks)
@@ -104,11 +108,15 @@ func (s *Sorter) buildChunks() error {
 	for err != io.EOF {
 		c := newChunk(s.config.ChunkSize, s.lessFunc)
 		for i := 0; i < s.config.ChunkSize; i++ {
-			rec, ok := <-s.input
-			if !ok {
-				break
+			select {
+			case rec, ok := <-s.input:
+				if !ok {
+					break
+				}
+				c.data = append(c.data, rec)
+			case <-s.ctx.Done():
+				return s.ctx.Err()
 			}
-			c.data = append(c.data, rec)
 		}
 		if len(c.data) == 0 {
 			// the chunk is empty
@@ -126,49 +134,52 @@ func (s *Sorter) buildChunks() error {
 func (s *Sorter) sortChunksToDisk() error {
 	scratch := make([]byte, binary.MaxVarintLen64)
 	for {
-		b, more := <-s.chunkChan
-		if more {
-			// sort
-			sort.Sort(b)
-			// save
-			// create temp file
-			f, err := ioutil.TempFile(s.config.TempFilesDir, mergeFilenamePrefix)
-			if err != nil {
-				return err
-			}
-			fName := f.Name()
-
-			bufWriter := bufio.NewWriterSize(f, fileSortBufferSize)
-			for _, d := range b.data {
-				// binary encoding
-				raw := d.ToBytes()
-				n := binary.PutUvarint(scratch, uint64(len(raw)))
-				_, err = bufWriter.Write(scratch[:n])
+		select {
+		case b, more := <-s.chunkChan:
+			if more {
+				// sort
+				sort.Sort(b)
+				// save
+				// create temp file
+				f, err := ioutil.TempFile(s.config.TempFilesDir, mergeFilenamePrefix)
 				if err != nil {
 					return err
 				}
-				_, err = bufWriter.Write(d.ToBytes())
+				fName := f.Name()
+
+				bufWriter := bufio.NewWriterSize(f, fileSortBufferSize)
+				for _, d := range b.data {
+					// binary encoding
+					raw := d.ToBytes()
+					n := binary.PutUvarint(scratch, uint64(len(raw)))
+					_, err = bufWriter.Write(scratch[:n])
+					if err != nil {
+						return err
+					}
+					_, err = bufWriter.Write(d.ToBytes())
+					if err != nil {
+						return err
+					}
+				}
+				err = bufWriter.Flush()
 				if err != nil {
 					return err
 				}
-			}
-			err = bufWriter.Flush()
-			if err != nil {
-				return err
-			}
-			err = f.Close()
-			if err != nil {
-				return err
-			}
+				err = f.Close()
+				if err != nil {
+					return err
+				}
 
-			s.mergeFileListMutex.Lock()
-			s.mergeFileList = append(s.mergeFileList, fName)
-			s.mergeFileListMutex.Unlock()
-		} else {
-			break
+				s.mergeFileListMutex.Lock()
+				s.mergeFileList = append(s.mergeFileList, fName)
+				s.mergeFileListMutex.Unlock()
+			} else {
+				break
+			}
+		case <-s.ctx.Done():
+			return s.ctx.Err()
 		}
 	}
-	return nil
 }
 
 // mergefile represents each sorted chunk on disk and its next value
@@ -185,8 +196,6 @@ func (m *mergeFile) getNext() (SortType, bool, error) {
 	var newRecBytes []byte
 	old := m.nextRec
 
-	//err := m.decoder.Decode(&newRecBytes)
-	//bsm testing
 	n, err := binary.ReadUvarint(m.reader)
 	if err == nil {
 		newRecBytes = make([]byte, int(n))
