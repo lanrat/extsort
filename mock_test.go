@@ -72,7 +72,7 @@ func sortStringForTestMock(inputData []string) error {
 		}
 		close(inputChan)
 	}()
-	sort := StringsMockContext(context.Background(), inputChan)
+	sort := StringsMockContext(context.Background(), inputChan, nil)
 	outChan, errChan := sort.Sort()
 	i := 0
 	for {
