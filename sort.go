@@ -161,7 +161,7 @@ func (s *Sorter) sortChunksToDisk() error {
 					if err != nil {
 						return err
 					}
-					_, err = bufWriter.Write(d.ToBytes())
+					_, err = bufWriter.Write(raw)
 					if err != nil {
 						return err
 					}
