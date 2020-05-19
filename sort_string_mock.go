@@ -76,6 +76,7 @@ func (s *StringMockSorter) mergeChunk(chunk *stringChunk) {
 	defer close(s.mergeErrChan)
 
 	for _, v := range chunk.data {
+		//log.Printf("sort.MergeChunk send %s", v)
 		s.mergeChunkChan <- v
 	}
 }

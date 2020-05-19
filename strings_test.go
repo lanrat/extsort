@@ -24,18 +24,14 @@ func sortStringForTest(inputData []string) error {
 	sort := StringsContext(context.Background(), inputChan, config)
 	outChan, errChan := sort.Sort()
 	i := 0
-	for {
-		select {
-		case err := <-errChan:
-			return err
-		case rec, more := <-outChan:
-			if !more {
-				return nil
-			}
-			inputData[i] = rec
-			i++
-		}
+	for rec := range outChan {
+		inputData[i] = rec
+		i++
 	}
+	if err := <-errChan; err != nil {
+		return err
+	}
+	return nil
 }
 
 func makeTestStringArray(size int) []string {

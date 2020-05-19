@@ -41,18 +41,14 @@ func sortForTest(inputData []val, lessFunc CompareLessFunc) error {
 	sort := NewContext(context.Background(), inputChan, fromBytesForTest, lessFunc, config)
 	outChan, errChan := sort.Sort()
 	i := 0
-	for {
-		select {
-		case err := <-errChan:
-			return err
-		case rec, more := <-outChan:
-			if !more {
-				return nil
-			}
-			inputData[i] = rec.(val)
-			i++
-		}
+	for rec := range outChan {
+		inputData[i] = rec.(val)
+		i++
 	}
+	if err := <-errChan; err != nil {
+		return err
+	}
+	return nil
 }
 
 type val struct {
