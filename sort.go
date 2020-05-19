@@ -54,12 +54,12 @@ type Sorter struct {
 	fromBytes          FromBytes
 }
 
-// New returns a new Sorter instance that can be used to sort the input chan
+// NewContext returns a new Sorter instance that can be used to sort the input chan
 // fromBytes is needed to unmarshal SortTypes from []byte on disk
 // lessfunc is the comparator used for SortType
 // config ca be nil to use the defaults, or only set the non-default values desired
 // if errors or interupted, may leave temp files behind in config.TempFilesDir
-func New(ctx context.Context, i chan SortType, fromBytes FromBytes, lessFunc CompareLessFunc, config *Config) *Sorter {
+func NewContext(ctx context.Context, i chan SortType, fromBytes FromBytes, lessFunc CompareLessFunc, config *Config) *Sorter {
 	s := new(Sorter)
 	s.input = i
 	s.ctx = ctx
@@ -71,6 +71,11 @@ func New(ctx context.Context, i chan SortType, fromBytes FromBytes, lessFunc Com
 	s.mergeChunkChan = make(chan SortType, s.config.SortedChanBuffSize)
 	s.mergeErrChan = make(chan error, 1)
 	return s
+}
+
+// New is the same as NewContext without a context
+func New(i chan SortType, fromBytes FromBytes, lessFunc CompareLessFunc, config *Config) *Sorter {
+	return NewContext(context.Background(), i, fromBytes, lessFunc, config)
 }
 
 // Sort sorts the Sorter's input chan and returns a new sorted chan, and error Chan
