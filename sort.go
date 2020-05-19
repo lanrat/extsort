@@ -120,7 +120,7 @@ func (s *Sorter) buildChunks() error {
 		}
 		if len(c.data) == 0 {
 			// the chunk is empty
-			return nil
+			break
 		}
 
 		// chunk is now full
@@ -174,7 +174,7 @@ func (s *Sorter) sortChunksToDisk() error {
 				s.mergeFileList = append(s.mergeFileList, fName)
 				s.mergeFileListMutex.Unlock()
 			} else {
-				break
+				return nil
 			}
 		case <-s.ctx.Done():
 			return s.ctx.Err()
