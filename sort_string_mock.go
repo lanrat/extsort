@@ -67,23 +67,6 @@ func (s *StringMockSorter) Sort() (chan string, chan error) {
 	return s.mergeChunkChan, s.mergeErrChan
 }
 
-// sortChunks is a worker for sorting the data stored in a chunk prior to save
-func (s *StringMockSorter) sortChunksInMemory() error {
-	for {
-		select {
-		case n, more := <-s.chunkNumberChan:
-			if more {
-				// sort
-				sort.Sort(s.chunks[n])
-			} else {
-				return nil
-			}
-		case <-s.ctx.Done():
-			return s.ctx.Err()
-		}
-	}
-}
-
 // buildChunks reads data from the input chan to builds chunks and pushes them to chunkChan
 // identical to StringSorter.buildChunks()
 func (s *StringMockSorter) buildChunks() error {
@@ -123,6 +106,23 @@ func (s *StringMockSorter) buildChunks() error {
 	return nil
 }
 
+// sortChunks is a worker for sorting the data stored in a chunk prior to save
+func (s *StringMockSorter) sortChunksInMemory() error {
+	for {
+		select {
+		case n, more := <-s.chunkNumberChan:
+			if more {
+				// sort
+				sort.Sort(s.chunks[n])
+			} else {
+				return nil
+			}
+		case <-s.ctx.Done():
+			return s.ctx.Err()
+		}
+	}
+}
+
 // mergeNChunks runs asynchronously in the background feeding data to getNext
 // sends errors to s.mergeErrorChan
 func (s *StringMockSorter) mergeNChunks() {
@@ -137,6 +137,7 @@ func (s *StringMockSorter) mergeNChunks() {
 	for n := range s.chunks {
 		merge := new(mergeStringMemory)
 		merge.chunk = s.chunks[n]
+		merge.size = len(merge.chunk.data)
 		pq.Push(merge)
 	}
 
@@ -159,16 +160,17 @@ func (s *StringMockSorter) mergeNChunks() {
 // mergefile represents each sorted chunk on disk and its next value
 type mergeStringMemory struct {
 	chunk  *stringChunk
+	size   int
 	offset int
 }
 
 // getNext returns the next value from the sorted chunk on disk
 // the first call will return nil while the struct is initialized
 func (m *mergeStringMemory) getNext() (string, bool, error) {
-	if m.offset >= len(m.chunk.data) {
+	if m.offset >= m.size {
 		return "", false, nil
 	}
 	out := m.chunk.data[m.offset]
 	m.offset++
-	return out, m.offset < len(m.chunk.data), nil
+	return out, m.offset < m.size, nil
 }

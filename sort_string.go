@@ -97,10 +97,9 @@ func (s *StringSorter) Sort() (chan string, chan error) {
 
 // buildChunks reads data from the input chan to builds chunks and pushes them to chunkChan
 func (s *StringSorter) buildChunks() error {
-	var err error
 	defer close(s.chunkChan) // if this is not called on error, causes a deadlock
 
-	for err != io.EOF {
+	for {
 		c := newStringChunk(s.config.ChunkSize)
 		for i := 0; i < s.config.ChunkSize; i++ {
 			select {
@@ -176,47 +175,6 @@ func (s *StringSorter) sortChunksToDisk() error {
 	}
 }
 
-// mergefile represents each sorted chunk on disk and its next value
-type mergeStringFile struct {
-	nextRec string
-	file    *os.File
-	reader  *bufio.Reader
-}
-
-// getNext returns the next value from the sorted chunk on disk
-// the first call will return nil while the struct is initialized
-func (m *mergeStringFile) getNext() (string, bool, error) {
-	var newRecBytes []byte
-	old := m.nextRec
-
-	n, err := binary.ReadUvarint(m.reader)
-	if err == nil {
-		newRecBytes = make([]byte, int(n))
-		_, err = io.ReadFull(m.reader, newRecBytes)
-	}
-	if err != nil {
-		if err == io.EOF {
-			m.nextRec = ""
-			if m.file != nil {
-				err = m.file.Close()
-				if err != nil {
-					return "", false, err
-				}
-				err = os.Remove(m.file.Name())
-				if err != nil {
-					return "", false, err
-				}
-				m.file = nil
-			}
-			return old, false, nil
-		}
-		return "", false, err
-	}
-
-	m.nextRec = string(newRecBytes)
-	return old, true, nil
-}
-
 // mergeNChunks runs asynchronously in the background feeding data to getNext
 // sends errors to s.mergeErrorChan
 func (s *StringSorter) mergeNChunks() {
@@ -263,4 +221,45 @@ func (s *StringSorter) mergeNChunks() {
 		}
 		s.mergeChunkChan <- rec
 	}
+}
+
+// mergefile represents each sorted chunk on disk and its next value
+type mergeStringFile struct {
+	nextRec string
+	file    *os.File
+	reader  *bufio.Reader
+}
+
+// getNext returns the next value from the sorted chunk on disk
+// the first call will return nil while the struct is initialized
+func (m *mergeStringFile) getNext() (string, bool, error) {
+	var newRecBytes []byte
+	old := m.nextRec
+
+	n, err := binary.ReadUvarint(m.reader)
+	if err == nil {
+		newRecBytes = make([]byte, int(n))
+		_, err = io.ReadFull(m.reader, newRecBytes)
+	}
+	if err != nil {
+		if err == io.EOF {
+			m.nextRec = ""
+			if m.file != nil {
+				err = m.file.Close()
+				if err != nil {
+					return "", false, err
+				}
+				err = os.Remove(m.file.Name())
+				if err != nil {
+					return "", false, err
+				}
+				m.file = nil
+			}
+			return old, false, nil
+		}
+		return "", false, err
+	}
+
+	m.nextRec = string(newRecBytes)
+	return old, true, nil
 }
