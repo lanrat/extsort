@@ -42,7 +42,7 @@ func makeTestStringArray(size int) []string {
 	a := make([]string, size)
 
 	for i := 0; i < size; i++ {
-		a[i] = fmt.Sprintf("%d", i)
+		a[i] = fmt.Sprintf("%d", i&0xeeeeee)
 	}
 
 	return a
