@@ -101,20 +101,6 @@ func KeyLessThan(a, b SortType) bool {
 	return a.(val).Key < b.(val).Key
 }
 
-type KeyLessThanSlice []val
-
-func (s KeyLessThanSlice) Len() int {
-	return len(s)
-}
-
-func (s KeyLessThanSlice) Swap(i, j int) {
-	s[i], s[j] = s[j], s[i]
-}
-
-func (s KeyLessThanSlice) Less(i, j int) bool {
-	return s[i].Key < s[j].Key
-}
-
 // use this comparator to validate sorted data (and prove its stable)
 func KeyOrderLessThan(ar, br SortType) bool {
 	a := ar.(val)
@@ -131,20 +117,6 @@ func KeyOrderLessThan(ar, br SortType) bool {
 // use this comparator to restore the original order of elements (by sorting on order field)
 func OrderLessThan(a, b SortType) bool {
 	return a.(val).Order < b.(val).Order
-}
-
-type OrderLessThanSlice []val
-
-func (s OrderLessThanSlice) Len() int {
-	return len(s)
-}
-
-func (s OrderLessThanSlice) Swap(i, j int) {
-	s[i], s[j] = s[j], s[i]
-}
-
-func (s OrderLessThanSlice) Less(i, j int) bool {
-	return s[i].Order < s[j].Order
 }
 
 func Test50(t *testing.T) {
