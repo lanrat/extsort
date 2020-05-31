@@ -21,8 +21,8 @@ func sortStringForTest(inputData []string) error {
 	}()
 	config := DefaultConfig()
 	config.ChunkSize = len(inputData)/20 + 100
-	sort := StringsContext(context.Background(), inputChan, config)
-	outChan, errChan := sort.Sort()
+	sort := Strings(inputChan, config)
+	outChan, errChan := sort.Sort(context.Background())
 	i := 0
 	for rec := range outChan {
 		inputData[i] = rec

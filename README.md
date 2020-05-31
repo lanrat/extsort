@@ -8,6 +8,8 @@ An [external sorting](https://en.wikipedia.org/wiki/External_sorting) library fo
 
 In order to remain efficient for all implementations, extsort doesn't handle serialization, but leaves that to the user by operating on types that implement the [`SortType.ToBytes`](https://godoc.org/github.com/lanrat/extsort#SortType) and [`FromBytes`](https://godoc.org/github.com/lanrat/extsort#FromBytes) interfaces.
 
+extsort also has a `Strings()` interface which does not require the overhead of converting everything to/from bytes and is faster for string types.
+
 extsort is not a [stable sort](https://en.wikipedia.org/wiki/Sorting_algorithm#Stability).
 
 ## Example
@@ -56,7 +58,7 @@ func main() {
 
     // create the sorter and start sorting
     sorter := extsort.New(inputChan, sortIntFromBytes, compareSortIntLess, nil)
-    outputChan, errChan := sorter.Sort()
+    outputChan, errChan := sorter.Sort(context.Background())
 
     // print output sorted data
     for data := range outputChan {
@@ -67,10 +69,6 @@ func main() {
     }
 }
 ```
-
-## Tuning
-
-The number of temporary files creates will be (total number of records) / (`ChunkSize`). If this is larger than the open file handle limit (`ulimit -n`) then the sort will fail and you should increase `ChunkSize` to reduce the number of temporary files used.
 
 ## TODO
 

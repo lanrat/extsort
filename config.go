@@ -1,17 +1,5 @@
 package extsort
 
-import (
-	"fmt"
-	"os"
-)
-
-var (
-	// file IO buffer size for each file
-	fileSortBufferSize = 1 << 16 // 64k
-	// filename prefix for files put in temp directory
-	mergeFilenamePrefix = fmt.Sprintf("extsort_%d_", os.Getpid())
-)
-
 // Config holds configuration settings for extsort
 type Config struct {
 	ChunkSize          int    // amount of records to store in each chunk which will be written to disk

@@ -20,13 +20,12 @@ type StringMockSorter struct {
 	mergeErrChan    chan error
 }
 
-// StringsMockContext returns a new Sorter instance that can be used to sort the input chan
+// StringsMock returns a new Sorter instance that can be used to sort the input chan
 // this is a mock sorter that exposes the same interface as the other extsort methods, but this is in-memory only
 // usefull for testing on smaller workloads.
-func StringsMockContext(ctx context.Context, i chan string, config *Config) *StringMockSorter {
+func StringsMock(i chan string, config *Config) *StringMockSorter {
 	s := new(StringMockSorter)
 	s.input = i
-	s.ctx = ctx
 	s.config = *mergeConfig(config)
 	s.chunkNumberChan = make(chan int, s.config.ChanBuffSize)
 	s.chunks = make([]*stringChunk, 0)
@@ -35,16 +34,11 @@ func StringsMockContext(ctx context.Context, i chan string, config *Config) *Str
 	return s
 }
 
-// StringsMock is the same as NewContext without a context
-func StringsMock(i chan string, config *Config) *StringMockSorter {
-	return StringsMockContext(context.Background(), i, config)
-}
-
 // Sort sorts the Sorter's input chan and returns a new sorted chan, and error Chan
 // Sort is a chunking operation that runs multiple workers asynchronously
-func (s *StringMockSorter) Sort() (chan string, chan error) {
+func (s *StringMockSorter) Sort(ctx context.Context) (chan string, chan error) {
 	var errGroup *errgroup.Group
-	errGroup, s.ctx = errgroup.WithContext(s.ctx)
+	errGroup, s.ctx = errgroup.WithContext(ctx)
 
 	//start saving chunks
 	errGroup.Go(s.buildChunks)

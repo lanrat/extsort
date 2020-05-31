@@ -6,12 +6,10 @@ import (
 	"context"
 	"encoding/binary"
 	"io"
-	"io/ioutil"
-	"os"
 	"sort"
-	"sync"
 
 	"github.com/lanrat/extsort/queue"
+	"github.com/lanrat/extsort/tempfile"
 
 	"golang.org/x/sync/errgroup"
 )
@@ -42,56 +40,56 @@ func (c *chunk) Less(i, j int) bool {
 
 // Sorter stores an input chan and feeds Sort to return a sorted chan
 type Sorter struct {
-	config             Config
-	ctx                context.Context
-	input              chan SortType
-	chunkChan          chan *chunk
-	mergeFileList      []string
-	mergeFileListMutex sync.Mutex
-	lessFunc           CompareLessFunc
-	mergeChunkChan     chan SortType
-	mergeErrChan       chan error
-	fromBytes          FromBytes
+	config         Config
+	buildSortCtx   context.Context
+	saveCtx        context.Context
+	mergeErrChan   chan error
+	tempReader     *tempfile.TempFileReader
+	input          chan SortType
+	chunkChan      chan *chunk
+	saveChunkChan  chan *chunk
+	mergeChunkChan chan SortType
+	lessFunc       CompareLessFunc
+	fromBytes      FromBytes
 }
 
-// NewContext returns a new Sorter instance that can be used to sort the input chan
+// New returns a new Sorter instance that can be used to sort the input chan
 // fromBytes is needed to unmarshal SortTypes from []byte on disk
 // lessfunc is the comparator used for SortType
 // config ca be nil to use the defaults, or only set the non-default values desired
 // if errors or interupted, may leave temp files behind in config.TempFilesDir
-func NewContext(ctx context.Context, i chan SortType, fromBytes FromBytes, lessFunc CompareLessFunc, config *Config) *Sorter {
+func New(i chan SortType, fromBytes FromBytes, lessFunc CompareLessFunc, config *Config) *Sorter {
 	s := new(Sorter)
 	s.input = i
-	s.ctx = ctx
 	s.lessFunc = lessFunc
 	s.fromBytes = fromBytes
 	s.config = *mergeConfig(config)
 	s.chunkChan = make(chan *chunk, s.config.ChanBuffSize)
-	s.mergeFileList = make([]string, 0, 1)
+	s.saveChunkChan = make(chan *chunk, s.config.ChanBuffSize)
 	s.mergeChunkChan = make(chan SortType, s.config.SortedChanBuffSize)
 	s.mergeErrChan = make(chan error, 1)
 	return s
 }
 
-// New is the same as NewContext without a context
-func New(i chan SortType, fromBytes FromBytes, lessFunc CompareLessFunc, config *Config) *Sorter {
-	return NewContext(context.Background(), i, fromBytes, lessFunc, config)
-}
-
 // Sort sorts the Sorter's input chan and returns a new sorted chan, and error Chan
 // Sort is a chunking operation that runs multiple workers asynchronously
-func (s *Sorter) Sort() (chan SortType, chan error) {
-	var errGroup *errgroup.Group
-	errGroup, s.ctx = errgroup.WithContext(s.ctx)
+func (s *Sorter) Sort(ctx context.Context) (chan SortType, chan error) {
+	var buildSortErrGroup, saveErrGroup *errgroup.Group
+	buildSortErrGroup, s.buildSortCtx = errgroup.WithContext(ctx)
+	saveErrGroup, s.saveCtx = errgroup.WithContext(ctx)
 
-	//start saving chunks
-	errGroup.Go(s.buildChunks)
+	//start creating chunks
+	buildSortErrGroup.Go(s.buildChunks)
 
+	// sort chunks
 	for i := 0; i < s.config.NumWorkers; i++ {
-		errGroup.Go(s.sortChunksToDisk)
+		buildSortErrGroup.Go(s.sortChunks)
 	}
 
-	err := errGroup.Wait()
+	// save chunks
+	saveErrGroup.Go(s.saveChunks)
+
+	err := buildSortErrGroup.Wait()
 	if err != nil {
 		s.mergeErrChan <- err
 		close(s.mergeErrChan)
@@ -99,6 +97,17 @@ func (s *Sorter) Sort() (chan SortType, chan error) {
 		return s.mergeChunkChan, s.mergeErrChan
 	}
 
+	// need to close saveChunkChan
+	close(s.saveChunkChan)
+	err = saveErrGroup.Wait()
+	if err != nil {
+		s.mergeErrChan <- err
+		close(s.mergeErrChan)
+		close(s.mergeChunkChan)
+		return s.mergeChunkChan, s.mergeErrChan
+	}
+
+	// read chunks and merge
 	// if this errors, it is returned in the errorChan
 	go s.mergeNChunks()
 
@@ -118,8 +127,8 @@ func (s *Sorter) buildChunks() error {
 					break
 				}
 				c.data = append(c.data, rec)
-			case <-s.ctx.Done():
-				return s.ctx.Err()
+			case <-s.buildSortCtx.Done():
+				return s.buildSortCtx.Err()
 			}
 		}
 		if len(c.data) == 0 {
@@ -135,8 +144,7 @@ func (s *Sorter) buildChunks() error {
 }
 
 // sortChunks is a worker for sorting the data stored in a chunk prior to save
-func (s *Sorter) sortChunksToDisk() error {
-	scratch := make([]byte, binary.MaxVarintLen64)
+func (s *Sorter) sortChunks() error {
 	for {
 		select {
 		case b, more := <-s.chunkChan:
@@ -144,44 +152,51 @@ func (s *Sorter) sortChunksToDisk() error {
 				// sort
 				sort.Sort(b)
 				// save
-				// create temp file
-				f, err := ioutil.TempFile(s.config.TempFilesDir, mergeFilenamePrefix)
-				if err != nil {
-					return err
-				}
-				fName := f.Name()
-
-				bufWriter := bufio.NewWriterSize(f, fileSortBufferSize)
-				for _, d := range b.data {
-					// binary encoding
-					raw := d.ToBytes()
-					n := binary.PutUvarint(scratch, uint64(len(raw)))
-					_, err = bufWriter.Write(scratch[:n])
-					if err != nil {
-						return err
-					}
-					_, err = bufWriter.Write(raw)
-					if err != nil {
-						return err
-					}
-				}
-				err = bufWriter.Flush()
-				if err != nil {
-					return err
-				}
-				err = f.Close()
-				if err != nil {
-					return err
-				}
-
-				s.mergeFileListMutex.Lock()
-				s.mergeFileList = append(s.mergeFileList, fName)
-				s.mergeFileListMutex.Unlock()
+				s.saveChunkChan <- b
 			} else {
 				return nil
 			}
-		case <-s.ctx.Done():
-			return s.ctx.Err()
+		case <-s.buildSortCtx.Done():
+			return s.buildSortCtx.Err()
+		}
+	}
+}
+
+// saveChunks is a worker for saveing sorted data to disk
+func (s *Sorter) saveChunks() error {
+	tempWriter, err := tempfile.New(s.config.TempFilesDir)
+	if err != nil {
+		return err
+	}
+	scratch := make([]byte, binary.MaxVarintLen64)
+	for {
+		select {
+		case b, more := <-s.saveChunkChan:
+			if more {
+				for _, d := range b.data {
+					// binary encoding for size
+					raw := d.ToBytes()
+					n := binary.PutUvarint(scratch, uint64(len(raw)))
+					_, err = tempWriter.Write(scratch[:n])
+					if err != nil {
+						return err
+					}
+					// add data
+					_, err = tempWriter.Write(raw)
+					if err != nil {
+						return err
+					}
+				}
+				_, err = tempWriter.Next()
+				if err != nil {
+					return err
+				}
+			} else {
+				s.tempReader, err = tempWriter.Save()
+				return err
+			}
+		case <-s.saveCtx.Done():
+			return s.saveCtx.Err()
 		}
 	}
 }
@@ -190,28 +205,27 @@ func (s *Sorter) sortChunksToDisk() error {
 // sends errors to s.mergeErrorChan
 func (s *Sorter) mergeNChunks() {
 	//populate queue with data from mergeFile list
-	var err error
 	defer close(s.mergeChunkChan)
+	// close temp file when done
+	defer func() {
+		err := s.tempReader.Close()
+		if err != nil {
+			s.mergeErrChan <- err
+		}
+	}()
 	defer close(s.mergeErrChan)
 	pq := queue.NewPriorityQueue(func(a, b interface{}) bool {
 		return s.lessFunc(a.(*mergeFile).nextRec, b.(*mergeFile).nextRec)
 	})
-	for _, filename := range s.mergeFileList {
-		// check the the file exists
-		if _, err = os.Stat(filename); err != nil {
-			s.mergeErrChan <- err
-			return
-		}
 
+	for i := 0; i < s.tempReader.Size(); i++ {
 		merge := new(mergeFile)
 		merge.fromBytes = s.fromBytes
-		merge.file, err = os.Open(filename)
-		if err != nil {
-			s.mergeErrChan <- err
-			return
+		merge.reader = s.tempReader.Read(i)
+		_, ok, err := merge.getNext() // start the merge by preloading the values
+		if err == io.EOF || !ok {
+			continue
 		}
-		merge.reader = bufio.NewReaderSize(merge.file, fileSortBufferSize)
-		_, _, err := merge.getNext() // start the merge by preloading the values
 		if err != nil {
 			s.mergeErrChan <- err
 			return
@@ -238,7 +252,6 @@ func (s *Sorter) mergeNChunks() {
 // mergefile represents each sorted chunk on disk and its next value
 type mergeFile struct {
 	nextRec   SortType
-	file      *os.File
 	fromBytes FromBytes
 	reader    *bufio.Reader
 }
@@ -257,17 +270,6 @@ func (m *mergeFile) getNext() (SortType, bool, error) {
 	if err != nil {
 		if err == io.EOF {
 			m.nextRec = nil
-			if m.file != nil {
-				err = m.file.Close()
-				if err != nil {
-					return nil, false, err
-				}
-				err = os.Remove(m.file.Name())
-				if err != nil {
-					return nil, false, err
-				}
-				m.file = nil
-			}
 			return old, false, nil
 		}
 		return nil, false, err

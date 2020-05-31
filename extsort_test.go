@@ -38,8 +38,8 @@ func sortForTest(inputData []val, lessFunc CompareLessFunc) error {
 	}()
 	config := DefaultConfig()
 	config.ChunkSize = len(inputData)/20 + 100
-	sort := NewContext(context.Background(), inputChan, fromBytesForTest, lessFunc, config)
-	outChan, errChan := sort.Sort()
+	sort := New(inputChan, fromBytesForTest, lessFunc, config)
+	outChan, errChan := sort.Sort(context.Background())
 	i := 0
 	for rec := range outChan {
 		inputData[i] = rec.(val)
@@ -54,6 +54,10 @@ func sortForTest(inputData []val, lessFunc CompareLessFunc) error {
 type val struct {
 	Key, Order int
 }
+
+// func (v *val) String() string {
+// 	return fmt.Sprintf("K: %d V: %d", v.Key, v.Order)
+// }
 
 func makeTestArray(size int) []val {
 	a := make([]val, size)
