@@ -63,6 +63,7 @@ func Strings(i chan string, config *Config) *StringSorter {
 
 // Sort sorts the Sorter's input chan and returns a new sorted chan, and error Chan
 // Sort is a chunking operation that runs multiple workers asynchronously
+// this blocks while sorting chunks and unblocks when merging
 func (s *StringSorter) Sort(ctx context.Context) (chan string, chan error) {
 	var buildSortErrGroup, saveErrGroup *errgroup.Group
 	buildSortErrGroup, s.buildSortCtx = errgroup.WithContext(ctx)

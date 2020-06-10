@@ -70,6 +70,10 @@ func main() {
 }
 ```
 
+## [extsort/diff](https://godoc.org/github.com/lanrat/extsort/diff)
+
+The diff sub-package is a self-contained package that assists with diffing of channels of sorted data. It can be used with the extsort methods or on its own
+
 ## TODO
 
 * parallelize merging after sorting

@@ -73,6 +73,7 @@ func New(i chan SortType, fromBytes FromBytes, lessFunc CompareLessFunc, config 
 
 // Sort sorts the Sorter's input chan and returns a new sorted chan, and error Chan
 // Sort is a chunking operation that runs multiple workers asynchronously
+// this blocks while sorting chunks and unblocks when merging
 func (s *Sorter) Sort(ctx context.Context) (chan SortType, chan error) {
 	var buildSortErrGroup, saveErrGroup *errgroup.Group
 	buildSortErrGroup, s.buildSortCtx = errgroup.WithContext(ctx)
