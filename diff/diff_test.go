@@ -1,14 +1,12 @@
-package extsort
+package diff
 
 import (
 	"fmt"
 	"testing"
-
-	"github.com/lanrat/extsort/diff"
 )
 
 func TestNil(t *testing.T) {
-	r, err := diff.Strings(nil, nil, nil, nil, nil)
+	r, err := Strings(nil, nil, nil, nil, nil)
 	if err == nil {
 		t.Fatal("diff.Strings(nil, nil, nil, nil, nil) should error")
 	}
@@ -22,7 +20,7 @@ func Test1A(t *testing.T) {
 	bChan := make(chan string)
 	aErrChan := make(chan error)
 	bErrChan := make(chan error)
-	resultF := func(d diff.Delta, s string) error {
+	resultF := func(d Delta, s string) error {
 		//log.Printf("result: %s %q", d.String(), s)
 		return nil
 	}
@@ -33,7 +31,7 @@ func Test1A(t *testing.T) {
 		close(aChan)
 		close(aErrChan)
 	}()
-	r, err := diff.Strings(aChan, bChan, aErrChan, bErrChan, resultF)
+	r, err := Strings(aChan, bChan, aErrChan, bErrChan, resultF)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,7 +45,7 @@ func Test1B(t *testing.T) {
 	bChan := make(chan string)
 	aErrChan := make(chan error)
 	bErrChan := make(chan error)
-	resultF := func(d diff.Delta, s string) error {
+	resultF := func(d Delta, s string) error {
 		//log.Printf("result: %s %q", d.String(), s)
 		return nil
 	}
@@ -58,7 +56,7 @@ func Test1B(t *testing.T) {
 		close(bChan)
 		close(bErrChan)
 	}()
-	r, err := diff.Strings(aChan, bChan, aErrChan, bErrChan, resultF)
+	r, err := Strings(aChan, bChan, aErrChan, bErrChan, resultF)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,7 +70,7 @@ func TestCommon(t *testing.T) {
 	bChan := make(chan string)
 	aErrChan := make(chan error)
 	bErrChan := make(chan error)
-	resultF := func(d diff.Delta, s string) error {
+	resultF := func(d Delta, s string) error {
 		t.Fatalf("common resultF called for %s %q", d, s)
 		return nil
 	}
@@ -86,7 +84,7 @@ func TestCommon(t *testing.T) {
 		close(aChan)
 		close(aErrChan)
 	}()
-	r, err := diff.Strings(aChan, bChan, aErrChan, bErrChan, resultF)
+	r, err := Strings(aChan, bChan, aErrChan, bErrChan, resultF)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,7 +98,7 @@ func TestMix(t *testing.T) {
 	bChan := make(chan string)
 	aErrChan := make(chan error)
 	bErrChan := make(chan error)
-	resultF := func(d diff.Delta, s string) error {
+	resultF := func(d Delta, s string) error {
 		//log.Printf("result: %s %q", d.String(), s)
 		return nil
 	}
@@ -125,7 +123,7 @@ func TestMix(t *testing.T) {
 		close(aChan)
 		close(aErrChan)
 	}()
-	r, err := diff.Strings(aChan, bChan, aErrChan, bErrChan, resultF)
+	r, err := Strings(aChan, bChan, aErrChan, bErrChan, resultF)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -139,7 +137,7 @@ func TestError(t *testing.T) {
 	bChan := make(chan string)
 	aErrChan := make(chan error, 1)
 	bErrChan := make(chan error, 1)
-	resultF := func(d diff.Delta, s string) error {
+	resultF := func(d Delta, s string) error {
 		//log.Printf("result: %s %q", d.String(), s)
 		return nil
 	}
@@ -167,7 +165,7 @@ func TestError(t *testing.T) {
 		close(aChan)
 		close(aErrChan)
 	}()
-	r, err := diff.Strings(aChan, bChan, aErrChan, bErrChan, resultF)
+	r, err := Strings(aChan, bChan, aErrChan, bErrChan, resultF)
 	if err != testErr {
 		t.Fatalf("err was not expected %s", err)
 	}

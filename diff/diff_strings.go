@@ -31,6 +31,7 @@ func Strings(aChan, bChan chan string, aErrChan chan error, bErrChan chan error,
 
 func (d *stringDiffer) diff() (r Result, err error) {
 	// get first sets of values
+	// TODO add and check for context here
 	dataA, okA := <-d.aChan
 	dataB, okB := <-d.bChan
 	for okA && okB {

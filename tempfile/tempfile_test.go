@@ -1,17 +1,15 @@
-package extsort
+package tempfile
 
 import (
 	"fmt"
 	"io"
 	"os"
 	"testing"
-
-	"github.com/lanrat/extsort/tempfile"
 )
 
 func TestSingleTempFile(t *testing.T) {
 	line := "The quick brown fox jumps over the lazy dog"
-	tempWriter, err := tempfile.New("")
+	tempWriter, err := New("")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,7 +57,7 @@ func TestSingleTempFile(t *testing.T) {
 func TestTempFileRepeat(t *testing.T) {
 	iterations := 10
 	line := "The quick brown fox jumps over the lazy dog"
-	tempWriter, err := tempfile.New("")
+	tempWriter, err := New("")
 	if err != nil {
 		t.Fatal(err)
 	}

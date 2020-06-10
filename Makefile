@@ -10,7 +10,7 @@ fmt:
 	gofmt -s -w -l .
 
 coverage.out: $(ALL_SOURCES)
-	go test -coverprofile=coverage.out
+	go test -coverprofile=coverage.out ./...
 
 cover: coverage.out
 	go tool cover -func=coverage.out
