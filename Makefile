@@ -4,7 +4,7 @@ ALL_SOURCES := $(shell find . -type f -name '*.go')
 .PHONY: fmt check test cover coverhtml
 
 test:
-	go test 
+	go test -v ./...
 
 fmt:
 	gofmt -s -w -l .
@@ -19,5 +19,5 @@ coverhtml: coverage.out
 	go tool cover -html=coverage.out
 
 check:
-	golangci-lint run || true
+	golangci-lint run ./... || true
 	staticcheck -unused.whole-program -checks all ./...
