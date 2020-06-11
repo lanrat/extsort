@@ -2,10 +2,12 @@
 package diff
 
 import (
+	"context"
 	"fmt"
 )
 
 type stringDiffer struct {
+	ctx                context.Context
 	aChan, bChan       chan string
 	aErrChan, bErrChan chan error
 	resultFunc         StringResultFunc
@@ -14,8 +16,9 @@ type stringDiffer struct {
 // Strings takes 4 chan inputs, 2 for strings, and 2 for their corresponding error channels, and a StringResultFunc to be called for every new/old record found
 // when done, counter results and errors (if any) are returned
 // string chan input MUST be sorted, for performance reasons this is not checked!
-func Strings(aChan, bChan chan string, aErrChan chan error, bErrChan chan error, resultFunc StringResultFunc) (r Result, err error) {
+func Strings(ctx context.Context, aChan, bChan chan string, aErrChan chan error, bErrChan chan error, resultFunc StringResultFunc) (r Result, err error) {
 	var d stringDiffer
+	d.ctx = ctx
 	d.aChan = aChan
 	d.aErrChan = aErrChan
 	d.bChan = bChan
@@ -31,9 +34,21 @@ func Strings(aChan, bChan chan string, aErrChan chan error, bErrChan chan error,
 
 func (d *stringDiffer) diff() (r Result, err error) {
 	// get first sets of values
-	// TODO add and check for context here
-	dataA, okA := <-d.aChan
-	dataB, okB := <-d.bChan
+	var dataA, dataB string
+	var okA, okB bool
+
+	// read from channel A
+	select {
+	case dataA, okA = <-d.aChan:
+	case <-d.ctx.Done():
+		return r, d.ctx.Err()
+	}
+	// read from channel B
+	select {
+	case dataB, okB = <-d.bChan:
+	case <-d.ctx.Done():
+		return r, d.ctx.Err()
+	}
 	for okA && okB {
 		if dataB < dataA {
 			r.TotalB++
@@ -42,7 +57,11 @@ func (d *stringDiffer) diff() (r Result, err error) {
 			if err != nil {
 				return
 			}
-			dataB, okB = <-d.bChan
+			select {
+			case dataB, okB = <-d.bChan:
+			case <-d.ctx.Done():
+				return r, d.ctx.Err()
+			}
 		} else if dataA < dataB {
 			r.TotalA++
 			r.ExtraA++
@@ -50,14 +69,26 @@ func (d *stringDiffer) diff() (r Result, err error) {
 			if err != nil {
 				return
 			}
-			dataA, okA = <-d.aChan
+			select {
+			case dataA, okA = <-d.aChan:
+			case <-d.ctx.Done():
+				return r, d.ctx.Err()
+			}
 		} else {
 			// common
 			r.Common++
 			r.TotalA++
 			r.TotalB++
-			dataA, okA = <-d.aChan
-			dataB, okB = <-d.bChan
+			select {
+			case dataA, okA = <-d.aChan:
+			case <-d.ctx.Done():
+				return r, d.ctx.Err()
+			}
+			select {
+			case dataB, okB = <-d.bChan:
+			case <-d.ctx.Done():
+				return r, d.ctx.Err()
+			}
 		}
 	}
 	// check for errors just in case
@@ -79,7 +110,11 @@ func (d *stringDiffer) diff() (r Result, err error) {
 		if err != nil {
 			return
 		}
-		dataA, okA = <-d.aChan
+		select {
+		case dataA, okA = <-d.aChan:
+		case <-d.ctx.Done():
+			return r, d.ctx.Err()
+		}
 	}
 	// check for A errors once again
 	if err = <-d.aErrChan; err != nil {
@@ -93,7 +128,11 @@ func (d *stringDiffer) diff() (r Result, err error) {
 		if err != nil {
 			return
 		}
-		dataB, okB = <-d.bChan
+		select {
+		case dataB, okB = <-d.bChan:
+		case <-d.ctx.Done():
+			return r, d.ctx.Err()
+		}
 	}
 	// check for B errors once again
 	if err = <-d.bErrChan; err != nil {

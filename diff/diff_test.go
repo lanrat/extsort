@@ -1,12 +1,13 @@
 package diff
 
 import (
+	"context"
 	"fmt"
 	"testing"
 )
 
 func TestNil(t *testing.T) {
-	r, err := Strings(nil, nil, nil, nil, nil)
+	r, err := Strings(context.Background(), nil, nil, nil, nil, nil)
 	if err == nil {
 		t.Fatal("diff.Strings(nil, nil, nil, nil, nil) should error")
 	}
@@ -31,7 +32,7 @@ func Test1A(t *testing.T) {
 		close(aChan)
 		close(aErrChan)
 	}()
-	r, err := Strings(aChan, bChan, aErrChan, bErrChan, resultF)
+	r, err := Strings(context.Background(), aChan, bChan, aErrChan, bErrChan, resultF)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,7 +57,7 @@ func Test1B(t *testing.T) {
 		close(bChan)
 		close(bErrChan)
 	}()
-	r, err := Strings(aChan, bChan, aErrChan, bErrChan, resultF)
+	r, err := Strings(context.Background(), aChan, bChan, aErrChan, bErrChan, resultF)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +85,7 @@ func TestCommon(t *testing.T) {
 		close(aChan)
 		close(aErrChan)
 	}()
-	r, err := Strings(aChan, bChan, aErrChan, bErrChan, resultF)
+	r, err := Strings(context.Background(), aChan, bChan, aErrChan, bErrChan, resultF)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,7 +124,7 @@ func TestMix(t *testing.T) {
 		close(aChan)
 		close(aErrChan)
 	}()
-	r, err := Strings(aChan, bChan, aErrChan, bErrChan, resultF)
+	r, err := Strings(context.Background(), aChan, bChan, aErrChan, bErrChan, resultF)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -165,7 +166,7 @@ func TestError(t *testing.T) {
 		close(aChan)
 		close(aErrChan)
 	}()
-	r, err := Strings(aChan, bChan, aErrChan, bErrChan, resultF)
+	r, err := Strings(context.Background(), aChan, bChan, aErrChan, bErrChan, resultF)
 	if err != testErr {
 		t.Fatalf("err was not expected %s", err)
 	}
