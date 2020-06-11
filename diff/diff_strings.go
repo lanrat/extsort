@@ -25,7 +25,7 @@ func Strings(ctx context.Context, aChan, bChan chan string, aErrChan chan error,
 	d.bErrChan = bErrChan
 	d.resultFunc = resultFunc
 
-	if aChan == nil || bChan == nil || aErrChan == nil || bErrChan == nil || resultFunc == nil {
+	if ctx == nil || aChan == nil || bChan == nil || aErrChan == nil || bErrChan == nil || resultFunc == nil {
 		return Result{}, fmt.Errorf("diff.Strings() arguments must not be nil")
 	}
 
