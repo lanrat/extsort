@@ -110,7 +110,7 @@ func (s *Sorter) Sort(ctx context.Context) (chan SortType, chan error) {
 
 	// read chunks and merge
 	// if this errors, it is returned in the errorChan
-	go s.mergeNChunks()
+	go s.mergeNChunks(ctx)
 
 	return s.mergeChunkChan, s.mergeErrChan
 }
@@ -197,6 +197,8 @@ func (s *Sorter) saveChunks() error {
 				return err
 			}
 		case <-s.saveCtx.Done():
+			// delete the temp file from disk (error unchecked)
+			tempWriter.Close()
 			return s.saveCtx.Err()
 		}
 	}
@@ -204,7 +206,7 @@ func (s *Sorter) saveChunks() error {
 
 // mergeNChunks runs asynchronously in the background feeding data to getNext
 // sends errors to s.mergeErrorChan
-func (s *Sorter) mergeNChunks() {
+func (s *Sorter) mergeNChunks(ctx context.Context) {
 	//populate queue with data from mergeFile list
 	defer close(s.mergeChunkChan)
 	// close temp file when done
@@ -246,7 +248,13 @@ func (s *Sorter) mergeNChunks() {
 		} else {
 			pq.Pop()
 		}
-		s.mergeChunkChan <- rec
+		// check for err in context just in case
+		select {
+		case s.mergeChunkChan <- rec:
+		case <-ctx.Done():
+			s.mergeErrChan <- err
+			return
+		}
 	}
 }
 

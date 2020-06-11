@@ -56,7 +56,7 @@ func (s *StringMockSorter) Sort(ctx context.Context) (chan string, chan error) {
 	}
 
 	// if this errors, it is returned in the errorChan
-	go s.mergeNChunks()
+	go s.mergeNChunks(ctx)
 
 	return s.mergeChunkChan, s.mergeErrChan
 }
@@ -119,7 +119,7 @@ func (s *StringMockSorter) sortChunksInMemory() error {
 
 // mergeNChunks runs asynchronously in the background feeding data to getNext
 // sends errors to s.mergeErrorChan
-func (s *StringMockSorter) mergeNChunks() {
+func (s *StringMockSorter) mergeNChunks(ctx context.Context) {
 	//populate queue with data from mergeFile list
 	defer close(s.mergeChunkChan)
 	defer close(s.mergeErrChan)
@@ -147,7 +147,13 @@ func (s *StringMockSorter) mergeNChunks() {
 		} else {
 			pq.Pop()
 		}
-		s.mergeChunkChan <- rec
+		// check for err in context just in case
+		select {
+		case s.mergeChunkChan <- rec:
+		case <-ctx.Done():
+			s.mergeErrChan <- err
+			return
+		}
 	}
 }
 
