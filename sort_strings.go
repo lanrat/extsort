@@ -240,7 +240,7 @@ func (s *StringSorter) mergeNChunks(ctx context.Context) {
 		select {
 		case s.mergeChunkChan <- rec:
 		case <-ctx.Done():
-			s.mergeErrChan <- err
+			s.mergeErrChan <- ctx.Err()
 			return
 		}
 	}

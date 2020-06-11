@@ -138,8 +138,7 @@ func (d *stringDiffer) diff() (r Result, err error) {
 	if err = <-d.bErrChan; err != nil {
 		return
 	}
-
-	return r, nil
+	return
 }
 
 // PrintStringDiff satisfies StringResultFunc can can be used as
