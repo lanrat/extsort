@@ -29,11 +29,11 @@ func (d Delta) String() string {
 
 // Result stores statistics generated from diffing two streams
 type Result struct {
-	ExtraA int64
-	ExtraB int64
-	TotalA int64
-	TotalB int64
-	Common int64
+	ExtraA uint64
+	ExtraB uint64
+	TotalA uint64
+	TotalB uint64
+	Common uint64
 }
 
 func (r *Result) String() string {
