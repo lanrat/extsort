@@ -74,6 +74,9 @@ func New(i chan SortType, fromBytes FromBytes, lessFunc CompareLessFunc, config 
 // Sort sorts the Sorter's input chan and returns a new sorted chan, and error Chan
 // Sort is a chunking operation that runs multiple workers asynchronously
 // this blocks while sorting chunks and unblocks when merging
+// NOTE: the context passed to Sort must outlive Sort() returning.
+// merge used the same context and runs in a goroutine after Sort returns()
+// for example, if calling sort in an errGroup, you must pass the group's parent context into sort.
 func (s *Sorter) Sort(ctx context.Context) (chan SortType, chan error) {
 	var buildSortErrGroup, saveErrGroup *errgroup.Group
 	buildSortErrGroup, s.buildSortCtx = errgroup.WithContext(ctx)
