@@ -34,26 +34,13 @@ func sortForMockTest(inputData []val, lessFunc extsort.CompareLessFunc) error {
 	return nil
 }
 
-func TestIsMockSorted(t *testing.T) {
-	a := make([]val, 5)
-	a[0] = val{3, 1}
-	a[1] = val{1, 5}
-	a[2] = val{2, 3}
-	a[3] = val{3, 4}
-	a[4] = val{4, 5}
-
-	if IsSorted(a, OrderLessThan) {
-		t.Error("Sorted")
-	}
-}
-
 func TestMock50(t *testing.T) {
 	a := makeTestArray(50)
 	if IsSorted(a, KeyLessThan) {
 		t.Error("sorted before starting")
 	}
 
-	err := sortForTest(a, KeyLessThan)
+	err := sortForMockTest(a, KeyLessThan)
 	if err != nil {
 		t.Fatalf("sort: %v", err)
 	}
@@ -69,7 +56,7 @@ func TestMockSmoke(t *testing.T) {
 	a[1] = val{1, 1}
 	a[2] = val{2, 2}
 
-	err := sortForTest(a, KeyLessThan)
+	err := sortForMockTest(a, KeyLessThan)
 	if err != nil {
 		t.Fatalf("sort: %v", err)
 	}
@@ -85,7 +72,7 @@ func TestMockSmokeStability(t *testing.T) {
 	a[1] = val{2, 1}
 	a[2] = val{2, 2}
 
-	err := sortForTest(a, KeyOrderLessThan)
+	err := sortForMockTest(a, KeyOrderLessThan)
 	if err != nil {
 		t.Fatalf("sort: %v", err)
 	}
@@ -98,7 +85,7 @@ func TestMockSmokeStability(t *testing.T) {
 func TestMock1K(t *testing.T) {
 	a := makeTestArray(1024)
 
-	err := sortForTest(a, KeyOrderLessThan)
+	err := sortForMockTest(a, KeyOrderLessThan)
 	if err != nil {
 		t.Fatalf("sort: %v", err)
 	}
@@ -110,7 +97,7 @@ func TestMock1K(t *testing.T) {
 func TestMock1M(t *testing.T) {
 	a := makeTestArray(1024 * 1024)
 
-	err := sortForTest(a, KeyOrderLessThan)
+	err := sortForMockTest(a, KeyOrderLessThan)
 	if err != nil {
 		t.Fatalf("sort: %v", err)
 	}
@@ -126,7 +113,7 @@ func TestMockRandom1M(t *testing.T) {
 	b := make([]val, size)
 	copy(b, a)
 
-	err := sortForTest(a, KeyLessThan)
+	err := sortForMockTest(a, KeyLessThan)
 	if err != nil {
 		t.Fatalf("sort: %v", err)
 	}

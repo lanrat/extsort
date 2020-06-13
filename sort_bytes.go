@@ -83,6 +83,7 @@ func New(i chan SortType, fromBytes FromBytes, lessFunc CompareLessFunc, config 
 }
 
 // NewMock is the same as New() but is backed by memory instead of a temporary file on disk
+// n is the size to initialize the backing bytes buffer too
 func NewMock(i chan SortType, fromBytes FromBytes, lessFunc CompareLessFunc, config *Config, n int) *Sorter {
 	s := newSorter(i, fromBytes, lessFunc, config)
 	s.tempWriter = tempfile.Mock(n)

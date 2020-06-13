@@ -62,6 +62,7 @@ func newStringSorter(i chan string, config *Config) *StringSorter {
 }
 
 // StringsMock is the same as Strings() but is backed by memory instead of a temporary file on disk
+// n is the size to initialize the backing bytes buffer too
 func StringsMock(i chan string, config *Config, n int) *StringSorter {
 	s := newStringSorter(i, config)
 	s.tempWriter = tempfile.Mock(n)
