@@ -44,7 +44,8 @@ type Sorter struct {
 	buildSortCtx   context.Context
 	saveCtx        context.Context
 	mergeErrChan   chan error
-	tempReader     *tempfile.TempFileReader
+	tempWriter     tempfile.TempWriter
+	tempReader     tempfile.TempReader
 	input          chan SortType
 	chunkChan      chan *chunk
 	saveChunkChan  chan *chunk
@@ -53,12 +54,7 @@ type Sorter struct {
 	fromBytes      FromBytes
 }
 
-// New returns a new Sorter instance that can be used to sort the input chan
-// fromBytes is needed to unmarshal SortTypes from []byte on disk
-// lessfunc is the comparator used for SortType
-// config ca be nil to use the defaults, or only set the non-default values desired
-// if errors or interupted, may leave temp files behind in config.TempFilesDir
-func New(i chan SortType, fromBytes FromBytes, lessFunc CompareLessFunc, config *Config) *Sorter {
+func newSorter(i chan SortType, fromBytes FromBytes, lessFunc CompareLessFunc, config *Config) *Sorter {
 	s := new(Sorter)
 	s.input = i
 	s.lessFunc = lessFunc
@@ -68,6 +64,28 @@ func New(i chan SortType, fromBytes FromBytes, lessFunc CompareLessFunc, config 
 	s.saveChunkChan = make(chan *chunk, s.config.ChanBuffSize)
 	s.mergeChunkChan = make(chan SortType, s.config.SortedChanBuffSize)
 	s.mergeErrChan = make(chan error, 1)
+	return s
+}
+
+// New returns a new Sorter instance that can be used to sort the input chan
+// fromBytes is needed to unmarshal SortTypes from []byte on disk
+// lessfunc is the comparator used for SortType
+// config ca be nil to use the defaults, or only set the non-default values desired
+// if errors or interupted, may leave temp files behind in config.TempFilesDir
+func New(i chan SortType, fromBytes FromBytes, lessFunc CompareLessFunc, config *Config) (*Sorter, error) {
+	var err error
+	s := newSorter(i, fromBytes, lessFunc, config)
+	s.tempWriter, err = tempfile.New(s.config.TempFilesDir)
+	if err != nil {
+		return s, err
+	}
+	return s, nil
+}
+
+// NewMock is the same as New() but is backed by memory instead of a temporary file on disk
+func NewMock(i chan SortType, fromBytes FromBytes, lessFunc CompareLessFunc, config *Config, n int) *Sorter {
+	s := newSorter(i, fromBytes, lessFunc, config)
+	s.tempWriter = tempfile.Mock(n)
 	return s
 }
 
@@ -168,10 +186,7 @@ func (s *Sorter) sortChunks() error {
 
 // saveChunks is a worker for saveing sorted data to disk
 func (s *Sorter) saveChunks() error {
-	tempWriter, err := tempfile.New(s.config.TempFilesDir)
-	if err != nil {
-		return err
-	}
+	var err error
 	scratch := make([]byte, binary.MaxVarintLen64)
 	for {
 		select {
@@ -181,27 +196,27 @@ func (s *Sorter) saveChunks() error {
 					// binary encoding for size
 					raw := d.ToBytes()
 					n := binary.PutUvarint(scratch, uint64(len(raw)))
-					_, err = tempWriter.Write(scratch[:n])
+					_, err = s.tempWriter.Write(scratch[:n])
 					if err != nil {
 						return err
 					}
 					// add data
-					_, err = tempWriter.Write(raw)
+					_, err = s.tempWriter.Write(raw)
 					if err != nil {
 						return err
 					}
 				}
-				_, err = tempWriter.Next()
+				_, err = s.tempWriter.Next()
 				if err != nil {
 					return err
 				}
 			} else {
-				s.tempReader, err = tempWriter.Save()
+				s.tempReader, err = s.tempWriter.Save()
 				return err
 			}
 		case <-s.saveCtx.Done():
 			// delete the temp file from disk (error unchecked)
-			tempWriter.Close()
+			s.tempWriter.Close()
 			return s.saveCtx.Err()
 		}
 	}

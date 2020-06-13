@@ -1,8 +1,10 @@
-package extsort
+package extsort_test
 
 import (
 	"fmt"
 	"testing"
+
+	"github.com/lanrat/extsort"
 )
 
 func TestUniqString(t *testing.T) {
@@ -18,7 +20,7 @@ func TestUniqString(t *testing.T) {
 		close(in)
 	}()
 
-	uniq := UniqString(in)
+	uniq := extsort.UniqString(in)
 
 	past := ""
 	for u := range uniq {

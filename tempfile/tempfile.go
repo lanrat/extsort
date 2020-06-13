@@ -12,27 +12,28 @@ import (
 	"os"
 )
 
-var (
-	// file IO buffer size for each file
-	fileBufferSize = 1 << 16 // 64k
-	// filename prefix for files put in temp directory
-	mergeFilenamePrefix = fmt.Sprintf("extsort_%d_", os.Getpid())
-)
+// file IO buffer size for each file
+const fileBufferSize = 1 << 16 // 64k
 
-type TempFileWriter struct {
+// filename prefix for files put in temp directory
+var mergeFilenamePrefix = fmt.Sprintf("extsort_%d_", os.Getpid())
+
+// FileWriter allows for creating virtual temp files for reading/writing
+type FileWriter struct {
 	file      *os.File
 	bufWriter *bufio.Writer
 	sections  []int64
 }
 
-type TempFileReader struct {
+type fileReader struct {
 	file     *os.File
 	sections []int64
 	readers  []*bufio.Reader
 }
 
-func New(dir string) (*TempFileWriter, error) {
-	var w TempFileWriter
+// New creates a new timefile in dir, if dir is empty the OS default is used
+func New(dir string) (*FileWriter, error) {
+	var w FileWriter
 	var err error
 	w.file, err = ioutil.TempFile(dir, mergeFilenamePrefix)
 	if err != nil {
@@ -44,19 +45,21 @@ func New(dir string) (*TempFileWriter, error) {
 	return &w, nil
 }
 
-func (w *TempFileWriter) Size() int {
+// Size returns the number of virtual files created
+func (w *FileWriter) Size() int {
 	// we add one because we only write to the sections when we are done
 	return len(w.sections) + 1
 }
 
-func (w *TempFileWriter) Name() string {
+// Name returns the full path of the underlying file on the OS
+func (w *FileWriter) Name() string {
 	return w.file.Name()
 }
 
 // Close stops the tempfile from accepting new data,
 // closes the file, and removes the temp file from disk
 // works like an abort, unrecoverable
-func (w *TempFileWriter) Close() error {
+func (w *FileWriter) Close() error {
 	err := w.file.Close()
 	if err != nil {
 		return err
@@ -66,15 +69,18 @@ func (w *TempFileWriter) Close() error {
 	return os.Remove(w.file.Name())
 }
 
-func (w *TempFileWriter) Write(p []byte) (nn int, err error) {
+// Write writes a byte to the current file section
+func (w *FileWriter) Write(p []byte) (int, error) {
 	return w.bufWriter.Write(p)
 }
 
-func (w *TempFileWriter) WriteString(s string) (int, error) {
+// WriteString writes s to the current file section
+func (w *FileWriter) WriteString(s string) (int, error) {
 	return w.bufWriter.WriteString(s)
 }
 
-func (w *TempFileWriter) Next() (int64, error) {
+// Next stops writeing the the current section/file and prepaired the tempwriter for the next one
+func (w *FileWriter) Next() (int64, error) {
 	// save offsets
 	err := w.bufWriter.Flush()
 	if err != nil {
@@ -89,7 +95,8 @@ func (w *TempFileWriter) Next() (int64, error) {
 	return pos, nil
 }
 
-func (w *TempFileWriter) Save() (*TempFileReader, error) {
+// Save stops writing new data/sections to the temp file and returns a reader for reading the data/sections back
+func (w *FileWriter) Save() (TempReader, error) {
 	_, err := w.Next()
 	if err != nil {
 		return nil, err
@@ -105,10 +112,10 @@ func (w *TempFileWriter) Save() (*TempFileReader, error) {
 	return newTempReader(w.file.Name(), w.sections)
 }
 
-func newTempReader(filename string, sections []int64) (*TempFileReader, error) {
+func newTempReader(filename string, sections []int64) (*fileReader, error) {
 	// create TempReader
 	var err error
-	var r TempFileReader
+	var r fileReader
 	r.file, err = os.Open(filename)
 	if err != nil {
 		return nil, err
@@ -126,7 +133,7 @@ func newTempReader(filename string, sections []int64) (*TempFileReader, error) {
 	return &r, nil
 }
 
-func (r *TempFileReader) Close() error {
+func (r *fileReader) Close() error {
 	r.readers = nil
 	err := r.file.Close()
 	if err != nil {
@@ -135,17 +142,13 @@ func (r *TempFileReader) Close() error {
 	return os.Remove(r.file.Name())
 }
 
-func (r *TempFileReader) Size() int {
+func (r *fileReader) Size() int {
 	return len(r.readers)
 }
 
-func (r *TempFileReader) Read(i int) *bufio.Reader {
+func (r *fileReader) Read(i int) *bufio.Reader {
 	if i < 0 || i >= len(r.readers) {
 		panic("tempfile: read request out of range")
 	}
 	return r.readers[i]
-}
-
-func (r *TempFileReader) Name() string {
-	return r.file.Name()
 }

@@ -1,4 +1,4 @@
-package extsort
+package extsort_test
 
 // this test package is heavily bases on the one for psilva261's timsort
 // https://github.com/psilva261/timsort/blob/master/timsort_test.go
@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"math/rand"
 	"testing"
+
+	"github.com/lanrat/extsort"
 )
 
 func sortStringForTest(inputData []string) error {
@@ -19,9 +21,12 @@ func sortStringForTest(inputData []string) error {
 		}
 		close(inputChan)
 	}()
-	config := DefaultConfig()
+	config := extsort.DefaultConfig()
 	config.ChunkSize = len(inputData)/20 + 100
-	sort := Strings(inputChan, config)
+	sort, err := extsort.Strings(inputChan, config)
+	if err != nil {
+		return err
+	}
 	outChan, errChan := sort.Sort(context.Background())
 	i := 0
 	for rec := range outChan {

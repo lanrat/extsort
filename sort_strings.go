@@ -42,15 +42,15 @@ type StringSorter struct {
 	buildSortCtx   context.Context
 	saveCtx        context.Context
 	mergeErrChan   chan error
-	tempReader     *tempfile.TempFileReader
+	tempWriter     tempfile.TempWriter
+	tempReader     tempfile.TempReader
 	input          chan string
 	chunkChan      chan *stringChunk
 	saveChunkChan  chan *stringChunk
 	mergeChunkChan chan string
 }
 
-// Strings returns a new Sorter instance that can be used to sort the input chan
-func Strings(i chan string, config *Config) *StringSorter {
+func newStringSorter(i chan string, config *Config) *StringSorter {
 	s := new(StringSorter)
 	s.input = i
 	s.config = *mergeConfig(config)
@@ -59,6 +59,24 @@ func Strings(i chan string, config *Config) *StringSorter {
 	s.mergeChunkChan = make(chan string, s.config.SortedChanBuffSize)
 	s.mergeErrChan = make(chan error, 1)
 	return s
+}
+
+// StringsMock is the same as Strings() but is backed by memory instead of a temporary file on disk
+func StringsMock(i chan string, config *Config, n int) *StringSorter {
+	s := newStringSorter(i, config)
+	s.tempWriter = tempfile.Mock(n)
+	return s
+}
+
+// Strings returns a new Sorter instance that can be used to sort the input chan
+func Strings(i chan string, config *Config) (*StringSorter, error) {
+	var err error
+	s := newStringSorter(i, config)
+	s.tempWriter, err = tempfile.New(s.config.TempFilesDir)
+	if err != nil {
+		return s, err
+	}
+	return s, nil
 }
 
 // Sort sorts the Sorter's input chan and returns a new sorted chan, and error Chan
@@ -158,10 +176,7 @@ func (s *StringSorter) sortChunks() error {
 
 // saveChunks is a worker for saveing sorted data to disk
 func (s *StringSorter) saveChunks() error {
-	tempWriter, err := tempfile.New(s.config.TempFilesDir)
-	if err != nil {
-		return err
-	}
+	var err error
 	scratch := make([]byte, binary.MaxVarintLen64)
 	for {
 		select {
@@ -170,27 +185,27 @@ func (s *StringSorter) saveChunks() error {
 				for _, d := range b.data {
 					// binary encoding for size
 					n := binary.PutUvarint(scratch, uint64(len(d)))
-					_, err = tempWriter.Write(scratch[:n])
+					_, err = s.tempWriter.Write(scratch[:n])
 					if err != nil {
 						return err
 					}
 					// add data
-					_, err = tempWriter.WriteString(d)
+					_, err = s.tempWriter.WriteString(d)
 					if err != nil {
 						return err
 					}
 				}
-				_, err = tempWriter.Next()
+				_, err = s.tempWriter.Next()
 				if err != nil {
 					return err
 				}
 			} else {
-				s.tempReader, err = tempWriter.Save()
+				s.tempReader, err = s.tempWriter.Save()
 				return err
 			}
 		case <-s.saveCtx.Done():
 			// delete the temp file from disk (error unchecked)
-			tempWriter.Close()
+			s.tempWriter.Close()
 			return s.saveCtx.Err()
 		}
 	}

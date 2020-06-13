@@ -1,8 +1,10 @@
-package extsort
+package extsort_test
 
 import (
 	"context"
 	"testing"
+
+	"github.com/lanrat/extsort"
 )
 
 func Test50StringMock(t *testing.T) {
@@ -72,7 +74,7 @@ func sortStringForTestMock(inputData []string) error {
 		}
 		close(inputChan)
 	}()
-	sort := StringsMock(inputChan, nil)
+	sort := extsort.StringsMock(inputChan, nil, 0)
 	outChan, errChan := sort.Sort(context.Background())
 	i := 0
 	for rec := range outChan {

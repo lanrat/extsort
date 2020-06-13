@@ -3,18 +3,14 @@ package tempfile_test
 import (
 	"fmt"
 	"io"
-	"os"
 	"testing"
 
 	"github.com/lanrat/extsort/tempfile"
 )
 
-func TestSingleTempFile(t *testing.T) {
+func TestSingleMockFile(t *testing.T) {
 	line := "The quick brown fox jumps over the lazy dog"
-	tempWriter, err := tempfile.New("")
-	if err != nil {
-		t.Fatal(err)
-	}
+	tempWriter := tempfile.Mock(0)
 
 	n, err := tempWriter.WriteString(line)
 	if err != nil {
@@ -28,7 +24,6 @@ func TestSingleTempFile(t *testing.T) {
 		t.Fatalf("tempWriter.Size returned %d, expected %d", s, 1)
 	}
 
-	name := tempWriter.Name()
 	tempReader, err := tempWriter.Save()
 	if err != nil {
 		t.Fatal(err)
@@ -48,19 +43,12 @@ func TestSingleTempFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = os.Stat(name)
-	if !os.IsNotExist(err) {
-		t.Fatalf("temp file exists after closing")
-	}
 }
 
-func TestTempFileRepeat(t *testing.T) {
+func TestTempMockRepeat(t *testing.T) {
 	iterations := 10
 	line := "The quick brown fox jumps over the lazy dog"
-	tempWriter, err := tempfile.New("")
-	if err != nil {
-		t.Fatal(err)
-	}
+	tempWriter := tempfile.Mock(10)
 
 	for i := 0; i < iterations; i++ {
 		_, err := tempWriter.WriteString(fmt.Sprintf("%d: %s", i, line))
@@ -77,15 +65,9 @@ func TestTempFileRepeat(t *testing.T) {
 		}
 	}
 
-	name := tempWriter.Name()
 	tempReader, err := tempWriter.Save()
 	if err != nil {
 		t.Fatal(err)
-	}
-
-	_, err = os.Stat(name)
-	if os.IsNotExist(err) {
-		t.Fatalf("temp file does not exist for reading")
 	}
 
 	s := tempReader.Size()
@@ -106,9 +88,5 @@ func TestTempFileRepeat(t *testing.T) {
 	err = tempReader.Close()
 	if err != nil {
 		t.Fatal(err)
-	}
-	_, err = os.Stat(name)
-	if !os.IsNotExist(err) {
-		t.Fatalf("temp file exists after closing")
 	}
 }

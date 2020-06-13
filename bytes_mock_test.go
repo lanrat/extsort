@@ -5,31 +5,12 @@ package extsort_test
 
 import (
 	"context"
-	"encoding/json"
-	"math/rand"
 	"testing"
 
 	"github.com/lanrat/extsort"
 )
 
-func fromBytesForTest(data []byte) extsort.SortType {
-	var v val
-	err := json.Unmarshal(data, &v)
-	if err != nil {
-		panic(err)
-	}
-	return v
-}
-
-func (v val) ToBytes() []byte {
-	bytes, err := json.Marshal(v)
-	if err != nil {
-		panic(err)
-	}
-	return bytes
-}
-
-func sortForTest(inputData []val, lessFunc extsort.CompareLessFunc) error {
+func sortForMockTest(inputData []val, lessFunc extsort.CompareLessFunc) error {
 	// make array of all data in chan
 	inputChan := make(chan extsort.SortType, 2)
 	go func() {
@@ -40,10 +21,7 @@ func sortForTest(inputData []val, lessFunc extsort.CompareLessFunc) error {
 	}()
 	config := extsort.DefaultConfig()
 	config.ChunkSize = len(inputData)/20 + 100
-	sort, err := extsort.New(inputChan, fromBytesForTest, lessFunc, config)
-	if err != nil {
-		return err
-	}
+	sort := extsort.NewMock(inputChan, fromBytesForTest, lessFunc, config, 0)
 	outChan, errChan := sort.Sort(context.Background())
 	i := 0
 	for rec := range outChan {
@@ -56,43 +34,7 @@ func sortForTest(inputData []val, lessFunc extsort.CompareLessFunc) error {
 	return nil
 }
 
-type val struct {
-	Key, Order int
-}
-
-// func (v *val) String() string {
-// 	return fmt.Sprintf("K: %d V: %d", v.Key, v.Order)
-// }
-
-func makeTestArray(size int) []val {
-	a := make([]val, size)
-
-	for i := 0; i < size; i++ {
-		a[i] = val{i & 0xeeeeee, i}
-	}
-
-	return a
-}
-
-func IsSorted(a []val, lessThan extsort.CompareLessFunc) bool {
-	len := len(a)
-
-	if len < 2 {
-		return true
-	}
-
-	prev := a[0]
-	for i := 1; i < len; i++ {
-		if lessThan(a[i], prev) {
-			return false
-		}
-		prev = a[i]
-	}
-
-	return true
-}
-
-func TestIsSorted(t *testing.T) {
+func TestIsMockSorted(t *testing.T) {
 	a := make([]val, 5)
 	a[0] = val{3, 1}
 	a[1] = val{1, 5}
@@ -105,30 +47,7 @@ func TestIsSorted(t *testing.T) {
 	}
 }
 
-// use this comparator for sorting
-func KeyLessThan(a, b extsort.SortType) bool {
-	return a.(val).Key < b.(val).Key
-}
-
-// use this comparator to validate sorted data (and prove its stable)
-func KeyOrderLessThan(ar, br extsort.SortType) bool {
-	a := ar.(val)
-	b := br.(val)
-	if a.Key < b.Key {
-		return true
-	} else if a.Key == b.Key {
-		return a.Order < b.Order
-	}
-
-	return false
-}
-
-// use this comparator to restore the original order of elements (by sorting on order field)
-func OrderLessThan(a, b extsort.SortType) bool {
-	return a.(val).Order < b.(val).Order
-}
-
-func Test50(t *testing.T) {
+func TestMock50(t *testing.T) {
 	a := makeTestArray(50)
 	if IsSorted(a, KeyLessThan) {
 		t.Error("sorted before starting")
@@ -144,7 +63,7 @@ func Test50(t *testing.T) {
 	}
 }
 
-func TestSmoke(t *testing.T) {
+func TestMockSmoke(t *testing.T) {
 	a := make([]val, 3)
 	a[0] = val{3, 0}
 	a[1] = val{1, 1}
@@ -160,7 +79,7 @@ func TestSmoke(t *testing.T) {
 	}
 }
 
-func TestSmokeStability(t *testing.T) {
+func TestMockSmokeStability(t *testing.T) {
 	a := make([]val, 3)
 	a[0] = val{3, 0}
 	a[1] = val{2, 1}
@@ -176,7 +95,7 @@ func TestSmokeStability(t *testing.T) {
 	}
 }
 
-func Test1K(t *testing.T) {
+func TestMock1K(t *testing.T) {
 	a := makeTestArray(1024)
 
 	err := sortForTest(a, KeyOrderLessThan)
@@ -188,7 +107,7 @@ func Test1K(t *testing.T) {
 	}
 }
 
-func Test1M(t *testing.T) {
+func TestMock1M(t *testing.T) {
 	a := makeTestArray(1024 * 1024)
 
 	err := sortForTest(a, KeyOrderLessThan)
@@ -200,21 +119,7 @@ func Test1M(t *testing.T) {
 	}
 }
 
-func makeRandomArray(size int) []val {
-	a := make([]val, size)
-
-	for i := 0; i < size; i++ {
-		a[i] = val{rand.Intn(100), i}
-	}
-
-	return a
-}
-
-func Equals(a, b val) bool {
-	return a.Key == b.Key && a.Order == b.Order
-}
-
-func TestRandom1M(t *testing.T) {
+func TestMockRandom1M(t *testing.T) {
 	size := 1024 * 1024
 
 	a := makeRandomArray(size)
