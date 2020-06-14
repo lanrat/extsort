@@ -86,7 +86,7 @@ func (w *FileWriter) Next() (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	pos, err := w.file.Seek(0, os.SEEK_CUR)
+	pos, err := w.file.Seek(0, io.SeekCurrent)
 	if err != nil {
 		return 0, err
 	}
