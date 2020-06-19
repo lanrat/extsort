@@ -1,4 +1,3 @@
-// Package extsort implements an unstable external sort for all the records in a chan or iterator
 package extsort
 
 import (

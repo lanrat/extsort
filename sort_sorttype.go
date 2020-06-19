@@ -38,8 +38,8 @@ func (c *chunk) Less(i, j int) bool {
 	return c.less(c.data[i], c.data[j])
 }
 
-// Sorter stores an input chan and feeds Sort to return a sorted chan
-type Sorter struct {
+// SortTypeSorter stores an input chan and feeds Sort to return a sorted chan
+type SortTypeSorter struct {
 	config         Config
 	buildSortCtx   context.Context
 	saveCtx        context.Context
@@ -54,8 +54,8 @@ type Sorter struct {
 	fromBytes      FromBytes
 }
 
-func newSorter(i chan SortType, fromBytes FromBytes, lessFunc CompareLessFunc, config *Config) *Sorter {
-	s := new(Sorter)
+func newSorter(i chan SortType, fromBytes FromBytes, lessFunc CompareLessFunc, config *Config) *SortTypeSorter {
+	s := new(SortTypeSorter)
 	s.input = i
 	s.lessFunc = lessFunc
 	s.fromBytes = fromBytes
@@ -73,7 +73,7 @@ func newSorter(i chan SortType, fromBytes FromBytes, lessFunc CompareLessFunc, c
 // config ca be nil to use the defaults, or only set the non-default values desired
 // if errors or interupted, may leave temp files behind in config.TempFilesDir
 // the returned chanels contain the data returned from calling Sort()
-func New(i chan SortType, fromBytes FromBytes, lessFunc CompareLessFunc, config *Config) (*Sorter, chan SortType, chan error) {
+func New(i chan SortType, fromBytes FromBytes, lessFunc CompareLessFunc, config *Config) (*SortTypeSorter, chan SortType, chan error) {
 	var err error
 	s := newSorter(i, fromBytes, lessFunc, config)
 	s.tempWriter, err = tempfile.New(s.config.TempFilesDir)
@@ -87,7 +87,7 @@ func New(i chan SortType, fromBytes FromBytes, lessFunc CompareLessFunc, config 
 
 // NewMock is the same as New() but is backed by memory instead of a temporary file on disk
 // n is the size to initialize the backing bytes buffer too
-func NewMock(i chan SortType, fromBytes FromBytes, lessFunc CompareLessFunc, config *Config, n int) (*Sorter, chan SortType, chan error) {
+func NewMock(i chan SortType, fromBytes FromBytes, lessFunc CompareLessFunc, config *Config, n int) (*SortTypeSorter, chan SortType, chan error) {
 	s := newSorter(i, fromBytes, lessFunc, config)
 	s.tempWriter = tempfile.Mock(n)
 	return s, s.mergeChunkChan, s.mergeErrChan
@@ -99,7 +99,7 @@ func NewMock(i chan SortType, fromBytes FromBytes, lessFunc CompareLessFunc, con
 // NOTE: the context passed to Sort must outlive Sort() returning.
 // merge used the same context and runs in a goroutine after Sort returns()
 // for example, if calling sort in an errGroup, you must pass the group's parent context into sort.
-func (s *Sorter) Sort(ctx context.Context) {
+func (s *SortTypeSorter) Sort(ctx context.Context) {
 	var buildSortErrGroup, saveErrGroup *errgroup.Group
 	buildSortErrGroup, s.buildSortCtx = errgroup.WithContext(ctx)
 	saveErrGroup, s.saveCtx = errgroup.WithContext(ctx)
@@ -139,7 +139,7 @@ func (s *Sorter) Sort(ctx context.Context) {
 }
 
 // buildChunks reads data from the input chan to builds chunks and pushes them to chunkChan
-func (s *Sorter) buildChunks() error {
+func (s *SortTypeSorter) buildChunks() error {
 	defer close(s.chunkChan) // if this is not called on error, causes a deadlock
 
 	for {
@@ -168,7 +168,7 @@ func (s *Sorter) buildChunks() error {
 }
 
 // sortChunks is a worker for sorting the data stored in a chunk prior to save
-func (s *Sorter) sortChunks() error {
+func (s *SortTypeSorter) sortChunks() error {
 	for {
 		select {
 		case b, more := <-s.chunkChan:
@@ -187,7 +187,7 @@ func (s *Sorter) sortChunks() error {
 }
 
 // saveChunks is a worker for saveing sorted data to disk
-func (s *Sorter) saveChunks() error {
+func (s *SortTypeSorter) saveChunks() error {
 	var err error
 	scratch := make([]byte, binary.MaxVarintLen64)
 	for {
@@ -226,7 +226,7 @@ func (s *Sorter) saveChunks() error {
 
 // mergeNChunks runs asynchronously in the background feeding data to getNext
 // sends errors to s.mergeErrorChan
-func (s *Sorter) mergeNChunks(ctx context.Context) {
+func (s *SortTypeSorter) mergeNChunks(ctx context.Context) {
 	//populate queue with data from mergeFile list
 	defer close(s.mergeChunkChan)
 	// close temp file when done

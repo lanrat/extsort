@@ -5,6 +5,7 @@ ALL_SOURCES := $(shell find . -type f -name '*.go')
 
 test:
 	go test -v ./...
+	@echo "< ALL TESTS PASS >"
 
 fmt:
 	gofmt -s -w -l .
