@@ -1,8 +1,8 @@
 package extsort
 
-// UniqString returns a channel identical to the input but only with uniq elements
+// UniqStringChan returns a channel identical to the input but only with uniq elements
 // only works on sorted inputs
-func UniqString(in chan string) chan string {
+func UniqStringChan(in chan string) chan string {
 	out := make(chan string)
 	go func() {
 		var prior string

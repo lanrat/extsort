@@ -40,11 +40,8 @@ func sortForTest(inputData []val, lessFunc extsort.CompareLessFunc) error {
 	}()
 	config := extsort.DefaultConfig()
 	config.ChunkSize = len(inputData)/20 + 100
-	sort, err := extsort.New(inputChan, fromBytesForTest, lessFunc, config)
-	if err != nil {
-		return err
-	}
-	outChan, errChan := sort.Sort(context.Background())
+	sort, outChan, errChan := extsort.New(inputChan, fromBytesForTest, lessFunc, config)
+	sort.Sort(context.Background())
 	i := 0
 	for rec := range outChan {
 		inputData[i] = rec.(val)
@@ -59,10 +56,6 @@ func sortForTest(inputData []val, lessFunc extsort.CompareLessFunc) error {
 type val struct {
 	Key, Order int
 }
-
-// func (v *val) String() string {
-// 	return fmt.Sprintf("K: %d V: %d", v.Key, v.Order)
-// }
 
 func makeTestArray(size int) []val {
 	a := make([]val, size)

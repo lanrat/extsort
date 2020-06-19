@@ -23,11 +23,8 @@ func sortStringForTest(inputData []string) error {
 	}()
 	config := extsort.DefaultConfig()
 	config.ChunkSize = len(inputData)/20 + 100
-	sort, err := extsort.Strings(inputChan, config)
-	if err != nil {
-		return err
-	}
-	outChan, errChan := sort.Sort(context.Background())
+	sort, outChan, errChan := extsort.Strings(inputChan, config)
+	sort.Sort(context.Background())
 	i := 0
 	for rec := range outChan {
 		inputData[i] = rec

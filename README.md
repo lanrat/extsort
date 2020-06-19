@@ -57,8 +57,8 @@ func main() {
     }()
 
     // create the sorter and start sorting
-    sorter := extsort.New(inputChan, sortIntFromBytes, compareSortIntLess, nil)
-    outputChan, errChan := sorter.Sort(context.Background())
+    sorter, outputChan, errChan := extsort.New(inputChan, sortIntFromBytes, compareSortIntLess, nil)
+    sorter.Sort(context.Background())
 
     // print output sorted data
     for data := range outputChan {

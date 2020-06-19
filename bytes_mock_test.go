@@ -21,8 +21,8 @@ func sortForMockTest(inputData []val, lessFunc extsort.CompareLessFunc) error {
 	}()
 	config := extsort.DefaultConfig()
 	config.ChunkSize = len(inputData)/20 + 100
-	sort := extsort.NewMock(inputChan, fromBytesForTest, lessFunc, config, 0)
-	outChan, errChan := sort.Sort(context.Background())
+	sort, outChan, errChan := extsort.NewMock(inputChan, fromBytesForTest, lessFunc, config, 0)
+	sort.Sort(context.Background())
 	i := 0
 	for rec := range outChan {
 		inputData[i] = rec.(val)

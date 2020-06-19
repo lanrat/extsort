@@ -72,22 +72,25 @@ func newSorter(i chan SortType, fromBytes FromBytes, lessFunc CompareLessFunc, c
 // lessfunc is the comparator used for SortType
 // config ca be nil to use the defaults, or only set the non-default values desired
 // if errors or interupted, may leave temp files behind in config.TempFilesDir
-func New(i chan SortType, fromBytes FromBytes, lessFunc CompareLessFunc, config *Config) (*Sorter, error) {
+// the returned chanels contain the data returned from calling Sort()
+func New(i chan SortType, fromBytes FromBytes, lessFunc CompareLessFunc, config *Config) (*Sorter, chan SortType, chan error) {
 	var err error
 	s := newSorter(i, fromBytes, lessFunc, config)
 	s.tempWriter, err = tempfile.New(s.config.TempFilesDir)
 	if err != nil {
-		return s, err
+		s.mergeErrChan <- err
+		close(s.mergeErrChan)
+		close(s.mergeChunkChan)
 	}
-	return s, nil
+	return s, s.mergeChunkChan, s.mergeErrChan
 }
 
 // NewMock is the same as New() but is backed by memory instead of a temporary file on disk
 // n is the size to initialize the backing bytes buffer too
-func NewMock(i chan SortType, fromBytes FromBytes, lessFunc CompareLessFunc, config *Config, n int) *Sorter {
+func NewMock(i chan SortType, fromBytes FromBytes, lessFunc CompareLessFunc, config *Config, n int) (*Sorter, chan SortType, chan error) {
 	s := newSorter(i, fromBytes, lessFunc, config)
 	s.tempWriter = tempfile.Mock(n)
-	return s
+	return s, s.mergeChunkChan, s.mergeErrChan
 }
 
 // Sort sorts the Sorter's input chan and returns a new sorted chan, and error Chan
@@ -96,7 +99,7 @@ func NewMock(i chan SortType, fromBytes FromBytes, lessFunc CompareLessFunc, con
 // NOTE: the context passed to Sort must outlive Sort() returning.
 // merge used the same context and runs in a goroutine after Sort returns()
 // for example, if calling sort in an errGroup, you must pass the group's parent context into sort.
-func (s *Sorter) Sort(ctx context.Context) (chan SortType, chan error) {
+func (s *Sorter) Sort(ctx context.Context) {
 	var buildSortErrGroup, saveErrGroup *errgroup.Group
 	buildSortErrGroup, s.buildSortCtx = errgroup.WithContext(ctx)
 	saveErrGroup, s.saveCtx = errgroup.WithContext(ctx)
@@ -117,7 +120,7 @@ func (s *Sorter) Sort(ctx context.Context) (chan SortType, chan error) {
 		s.mergeErrChan <- err
 		close(s.mergeErrChan)
 		close(s.mergeChunkChan)
-		return s.mergeChunkChan, s.mergeErrChan
+		return
 	}
 
 	// need to close saveChunkChan
@@ -127,14 +130,12 @@ func (s *Sorter) Sort(ctx context.Context) (chan SortType, chan error) {
 		s.mergeErrChan <- err
 		close(s.mergeErrChan)
 		close(s.mergeChunkChan)
-		return s.mergeChunkChan, s.mergeErrChan
+		return
 	}
 
 	// read chunks and merge
 	// if this errors, it is returned in the errorChan
 	go s.mergeNChunks(ctx)
-
-	return s.mergeChunkChan, s.mergeErrChan
 }
 
 // buildChunks reads data from the input chan to builds chunks and pushes them to chunkChan

@@ -74,8 +74,8 @@ func sortStringForTestMock(inputData []string) error {
 		}
 		close(inputChan)
 	}()
-	sort := extsort.StringsMock(inputChan, nil, 0)
-	outChan, errChan := sort.Sort(context.Background())
+	sort, outChan, errChan := extsort.StringsMock(inputChan, nil, 0)
+	sort.Sort(context.Background())
 	i := 0
 	for rec := range outChan {
 		inputData[i] = rec

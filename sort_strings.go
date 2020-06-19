@@ -63,21 +63,23 @@ func newStringSorter(i chan string, config *Config) *StringSorter {
 
 // StringsMock is the same as Strings() but is backed by memory instead of a temporary file on disk
 // n is the size to initialize the backing bytes buffer too
-func StringsMock(i chan string, config *Config, n int) *StringSorter {
+func StringsMock(i chan string, config *Config, n int) (*StringSorter, chan string, chan error) {
 	s := newStringSorter(i, config)
 	s.tempWriter = tempfile.Mock(n)
-	return s
+	return s, s.mergeChunkChan, s.mergeErrChan
 }
 
 // Strings returns a new Sorter instance that can be used to sort the input chan
-func Strings(i chan string, config *Config) (*StringSorter, error) {
+func Strings(i chan string, config *Config) (*StringSorter, chan string, chan error) {
 	var err error
 	s := newStringSorter(i, config)
 	s.tempWriter, err = tempfile.New(s.config.TempFilesDir)
 	if err != nil {
-		return s, err
+		s.mergeErrChan <- err
+		close(s.mergeErrChan)
+		close(s.mergeChunkChan)
 	}
-	return s, nil
+	return s, s.mergeChunkChan, s.mergeErrChan
 }
 
 // Sort sorts the Sorter's input chan and returns a new sorted chan, and error Chan
@@ -86,7 +88,7 @@ func Strings(i chan string, config *Config) (*StringSorter, error) {
 // NOTE: the context passed to Sort must outlive Sort() returning.
 // merge used the same context and runs in a goroutine after Sort returns()
 // for example, if calling sort in an errGroup, you must pass the group's parent context into sort.
-func (s *StringSorter) Sort(ctx context.Context) (chan string, chan error) {
+func (s *StringSorter) Sort(ctx context.Context) {
 	var buildSortErrGroup, saveErrGroup *errgroup.Group
 	buildSortErrGroup, s.buildSortCtx = errgroup.WithContext(ctx)
 	saveErrGroup, s.saveCtx = errgroup.WithContext(ctx)
@@ -107,7 +109,7 @@ func (s *StringSorter) Sort(ctx context.Context) (chan string, chan error) {
 		s.mergeErrChan <- err
 		close(s.mergeErrChan)
 		close(s.mergeChunkChan)
-		return s.mergeChunkChan, s.mergeErrChan
+		return
 	}
 
 	// need to close saveChunkChan
@@ -117,14 +119,12 @@ func (s *StringSorter) Sort(ctx context.Context) (chan string, chan error) {
 		s.mergeErrChan <- err
 		close(s.mergeErrChan)
 		close(s.mergeChunkChan)
-		return s.mergeChunkChan, s.mergeErrChan
+		return
 	}
 
 	// read chunks and merge
 	// if this errors, it is returned in the errorChan
 	go s.mergeNChunks(ctx)
-
-	return s.mergeChunkChan, s.mergeErrChan
 }
 
 // buildChunks reads data from the input chan to builds chunks and pushes them to chunkChan
