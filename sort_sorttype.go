@@ -186,7 +186,7 @@ func (s *SortTypeSorter) sortChunks() error {
 	}
 }
 
-// saveChunks is a worker for saveing sorted data to disk
+// saveChunks is a worker for saving sorted data to disk
 func (s *SortTypeSorter) saveChunks() error {
 	var err error
 	scratch := make([]byte, binary.MaxVarintLen64)

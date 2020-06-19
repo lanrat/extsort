@@ -5,7 +5,7 @@ import (
 	"io"
 )
 
-// TempWriter interface defines teh virtual tempfile creation/writing stage
+// TempWriter interface defines the virtual tempfile creation/writing stage
 type TempWriter interface {
 	io.Closer
 	Size() int
