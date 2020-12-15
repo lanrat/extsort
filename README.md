@@ -1,12 +1,12 @@
 # extsort
 
-[![GoDoc](https://godoc.org/github.com/lanrat/extsort?status.svg)](https://godoc.org/github.com/lanrat/extsort)
+[![PkgGoDev](https://pkg.go.dev/badge/github.com/lanrat/extsort)](https://pkg.go.dev/github.com/lanrat/extsort)
 
 [![Go Report Card](https://goreportcard.com/badge/github.com/lanrat/extsort)](https://goreportcard.com/report/github.com/lanrat/extsort)
 
 An [external sorting](https://en.wikipedia.org/wiki/External_sorting) library for golang (i.e. on disk sorting) on an arbitrarily channel, even if the generated content doesn't all fit in memory at once. Once sorted, it returns a new channel returning data in sorted order.
 
-In order to remain efficient for all implementations, extsort doesn't handle serialization, but leaves that to the user by operating on types that implement the [`SortType.ToBytes`](https://godoc.org/github.com/lanrat/extsort#SortType) and [`FromBytes`](https://godoc.org/github.com/lanrat/extsort#FromBytes) interfaces.
+In order to remain efficient for all implementations, extsort doesn't handle serialization, but leaves that to the user by operating on types that implement the [`SortType.ToBytes`](https://pkg.go.dev/github.com/lanrat/extsort#SortType) and [`FromBytes`](https://pkg.go.dev/github.com/lanrat/extsort#FromBytes) interfaces.
 
 extsort also has a `Strings()` interface which does not require the overhead of converting everything to/from bytes and is faster for string types.
 
@@ -70,7 +70,7 @@ func main() {
 }
 ```
 
-## [extsort/diff](https://godoc.org/github.com/lanrat/extsort/diff)
+## [extsort/diff](https://pkg.go.dev/github.com/lanrat/extsort/diff)
 
 The diff sub-package is a self-contained package that assists with diffing of channels of sorted data. It can be used with the extsort methods or on its own
 
