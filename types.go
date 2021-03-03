@@ -11,6 +11,10 @@ type Sizer interface {
 	Size() int
 }
 
+type Releaser interface {
+	Release()
+}
+
 // FromBytes unmarshal bytes from gob to create a SortType when reading back the sorted items
 type FromBytes func([]byte) SortType
 

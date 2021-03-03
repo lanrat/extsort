@@ -219,6 +219,9 @@ func (s *SortTypeSorter) saveChunks() error {
 					if err != nil {
 						return err
 					}
+					if releaser, ok := d.(Releaser); ok {
+						releaser.Release()
+					}
 				}
 				_, err = s.tempWriter.Next()
 				if err != nil {
