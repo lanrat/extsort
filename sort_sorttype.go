@@ -19,10 +19,9 @@ type chunk struct {
 	less CompareLessFunc
 }
 
-func newChunk(size int, lessFunc CompareLessFunc) *chunk {
+func newChunk(lessFunc CompareLessFunc) *chunk {
 	c := new(chunk)
 	c.less = lessFunc
-	c.data = make([]SortType, 0, size)
 	return c
 }
 
@@ -143,14 +142,26 @@ func (s *SortTypeSorter) buildChunks() error {
 	defer close(s.chunkChan) // if this is not called on error, causes a deadlock
 
 	for {
-		c := newChunk(s.config.ChunkSize, s.lessFunc)
-		for i := 0; i < s.config.ChunkSize; i++ {
+		c := newChunk(s.lessFunc)
+		var size int
+	Loop:
+		for i := 0; ; i++ {
 			select {
 			case rec, ok := <-s.input:
 				if !ok {
-					break
+					break Loop
 				}
+
 				c.data = append(c.data, rec)
+
+				if sizer, ok := rec.(Sizer); ok {
+					size += sizer.Size()
+					if size >= s.config.ChunkSize {
+						break Loop
+					}
+				} else if len(c.data) >= s.config.ChunkSize {
+					break Loop
+				}
 			case <-s.buildSortCtx.Done():
 				return s.buildSortCtx.Err()
 			}

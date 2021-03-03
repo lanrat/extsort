@@ -7,6 +7,10 @@ type SortType interface {
 	ToBytes() []byte // ToBytes used for marshaling with gob
 }
 
+type Sizer interface {
+	Size() int
+}
+
 // FromBytes unmarshal bytes from gob to create a SortType when reading back the sorted items
 type FromBytes func([]byte) SortType
 
