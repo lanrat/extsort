@@ -16,8 +16,10 @@ type sortInt struct {
 	i int64
 }
 
-func (s sortInt) ToBytes() []byte {
-	buf := make([]byte, binary.MaxVarintLen64)
+func (s sortInt) ToBytes(buf []byte) []byte {
+	for i := 0; i < binary.MaxVarintLen64; i++ {
+		buf = append(buf, 0)
+	}
 	binary.PutVarint(buf, s.i)
 	return buf
 }

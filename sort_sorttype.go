@@ -201,13 +201,14 @@ func (s *SortTypeSorter) sortChunks() error {
 func (s *SortTypeSorter) saveChunks() error {
 	var err error
 	scratch := make([]byte, binary.MaxVarintLen64)
+	var raw []byte
 	for {
 		select {
 		case b, more := <-s.saveChunkChan:
 			if more {
 				for _, d := range b.data {
 					// binary encoding for size
-					raw := d.ToBytes()
+					raw = d.ToBytes(raw[:0])
 					n := binary.PutUvarint(scratch, uint64(len(raw)))
 					_, err = s.tempWriter.Write(scratch[:n])
 					if err != nil {

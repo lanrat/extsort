@@ -4,6 +4,7 @@ package extsort_test
 // https://github.com/psilva261/timsort/blob/master/timsort_test.go
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"math/rand"
@@ -21,12 +22,12 @@ func fromBytesForTest(data []byte) extsort.SortType {
 	return v
 }
 
-func (v val) ToBytes() []byte {
-	bytes, err := json.Marshal(v)
-	if err != nil {
+func (v val) ToBytes(buf []byte) []byte {
+	b := bytes.NewBuffer(buf)
+	if err := json.NewEncoder(b).Encode(v); err != nil {
 		panic(err)
 	}
-	return bytes
+	return b.Bytes()
 }
 
 func sortForTest(inputData []val, lessFunc extsort.CompareLessFunc) error {

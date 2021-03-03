@@ -4,7 +4,7 @@ import "context"
 
 // SortType defines the interface required by the extsort library to be able to sort the items
 type SortType interface {
-	ToBytes() []byte // ToBytes used for marshaling with gob
+	ToBytes(buf []byte) []byte
 }
 
 type Sizer interface {
