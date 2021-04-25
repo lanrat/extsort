@@ -97,7 +97,7 @@ func NewMock(i chan SortType, fromBytes FromBytes, lessFunc CompareLessFunc, con
 // Sort is a chunking operation that runs multiple workers asynchronously
 // this blocks while sorting chunks and unblocks when merging
 // NOTE: the context passed to Sort must outlive Sort() returning.
-// merge used the same context and runs in a goroutine after Sort returns()
+// Merge uses the same context and runs in a goroutine after Sort returns().
 // for example, if calling sort in an errGroup, you must pass the group's parent context into sort.
 func (s *SortTypeSorter) Sort(ctx context.Context) {
 	var buildSortErrGroup, saveErrGroup *errgroup.Group
