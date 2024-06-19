@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"math/rand"
 	"testing"
+	"time"
 
 	"github.com/lanrat/extsort"
 )
@@ -231,5 +232,37 @@ func TestRandom1M(t *testing.T) {
 		if !Equals(b[i], a[i]) {
 			t.Error("oops")
 		}
+	}
+}
+
+func TestDeadLockContextCancel(t *testing.T) {
+	inputChan := make(chan extsort.SortType, 2)
+	config := extsort.DefaultConfig()
+	config.ChunkSize = 2
+	config.SortedChanBuffSize = 2
+	// for simplicity, set ChanBuffSize to zero. the deadlock can happen with any value.
+	// see https://github.com/lanrat/extsort/issues/7 for details.
+	config.ChanBuffSize = 0
+	lessFunc := func(a, b extsort.SortType) bool {
+		time.Sleep(300 * time.Millisecond) // emulate long operation
+		return false
+	}
+	sort, _, _ := extsort.New(inputChan, fromBytesForTest, lessFunc, config)
+	ctx, cf := context.WithCancel(context.Background())
+	defer cf()
+	waitCh := make(chan struct{})
+	go func() {
+		defer close(waitCh)
+		sort.Sort(ctx)
+	}()
+	inputChan <- val{Key: 1, Order: 1}
+	inputChan <- val{Key: 2, Order: 2}
+	close(inputChan)
+	// cancel the context. the sort.Sort should now be waiting inside lessFunc.
+	cf()
+	select {
+	case <- waitCh:
+	case <-time.After(time.Second):
+		t.Fatal("deadlock")
 	}
 }
