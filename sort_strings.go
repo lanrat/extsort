@@ -164,7 +164,11 @@ func (s *StringSorter) sortChunks() error {
 				// sort
 				sort.Sort(b)
 				// save
-				s.saveChunkChan <- b
+				select {
+				case s.saveChunkChan <- b:
+				case <-s.buildSortCtx.Done():
+					return s.buildSortCtx.Err()
+				}
 			} else {
 				return nil
 			}
