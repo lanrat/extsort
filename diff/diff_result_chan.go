@@ -6,7 +6,7 @@ type StringChanResult struct {
 	S string
 }
 
-// StringResultChan allows diff.Strings() to be called in parallel with its resultFunc prosessing
+// StringResultChan allows diff.Strings() to be called in parallel with its resultFunc processing
 // this function returns a StringResultFunc for use in diff.Strings(), and a channel for consuming
 // diff results in another goroutine
 func StringResultChan() (StringResultFunc, chan *StringChanResult) {

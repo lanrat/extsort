@@ -264,7 +264,7 @@ func (s *StringSorter) mergeNChunks(ctx context.Context) {
 	}
 }
 
-// mergefile represents each sorted chunk on disk and its next value
+// mergeStringFile represents each sorted chunk on disk and its next value
 type mergeStringFile struct {
 	nextRec string
 	reader  *bufio.Reader

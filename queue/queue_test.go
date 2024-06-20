@@ -6,14 +6,14 @@ import (
 	"github.com/lanrat/extsort/queue"
 )
 
-func intComapreFunc(a interface{}, b interface{}) bool {
+func intCompareFunc(a interface{}, b interface{}) bool {
 	ai := a.(int)
 	bi := b.(int)
 	return ai < bi
 }
 
 func TestInit0(t *testing.T) {
-	q := queue.NewPriorityQueue(intComapreFunc)
+	q := queue.NewPriorityQueue(intCompareFunc)
 	for i := 20; i > 0; i-- {
 		q.Push(0) // all elements are the same
 	}
@@ -36,7 +36,7 @@ func TestInit0(t *testing.T) {
 }
 
 func Test(t *testing.T) {
-	q := queue.NewPriorityQueue(intComapreFunc)
+	q := queue.NewPriorityQueue(intCompareFunc)
 	l := q.Len()
 	if l != 0 {
 		t.Fatalf("queue len is %d, expected %d", l, 0)

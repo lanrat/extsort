@@ -261,7 +261,7 @@ func TestDeadLockContextCancel(t *testing.T) {
 	// cancel the context. the sort.Sort should now be waiting inside lessFunc.
 	cf()
 	select {
-	case <- waitCh:
+	case <-waitCh:
 	case <-time.After(time.Second):
 		t.Fatal("deadlock")
 	}
