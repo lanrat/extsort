@@ -173,12 +173,26 @@ func (s *SortTypeSorter) sortChunks() error {
 		select {
 		case b, more := <-s.chunkChan:
 			if more {
-				// sort
-				sort.Sort(b)
-				// save
+				// Create a channel to signal when sorting is complete
+				sortDone := make(chan struct{})
+				
+				// Run sort in a separate goroutine
+				go func() {
+					defer close(sortDone)
+					sort.Sort(b)
+				}()
+				
+				// Wait for either sort completion or context cancellation
 				select {
-				case s.saveChunkChan <- b:
+				case <-sortDone:
+					// Sort completed successfully, proceed to save
+					select {
+					case s.saveChunkChan <- b:
+					case <-s.buildSortCtx.Done():
+						return s.buildSortCtx.Err()
+					}
 				case <-s.buildSortCtx.Done():
+					// Context cancelled while sorting - abandon this chunk
 					return s.buildSortCtx.Err()
 				}
 			} else {
