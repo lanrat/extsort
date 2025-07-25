@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"math/rand"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -264,5 +265,72 @@ func TestDeadLockContextCancel(t *testing.T) {
 	case <-waitCh:
 	case <-time.After(time.Second):
 		t.Fatal("deadlock")
+	}
+}
+
+// TestDeadLockContextCancelDeterministic tests that context cancellation during sorting
+// is handled correctly. This test guarantees the deadlock by using synchronization 
+// to ensure cancellation happens while sort.Sort() is blocked in the comparison function.
+func TestDeadLockContextCancelDeterministic(t *testing.T) {
+	inputChan := make(chan extsort.SortType, 10)
+	config := extsort.DefaultConfig()
+	config.ChunkSize = 2
+	config.SortedChanBuffSize = 2  
+	config.ChanBuffSize = 0
+	config.NumWorkers = 1 // Single worker to make deadlock more deterministic
+	
+	// Synchronization: ensure we cancel exactly when sort.Sort() is blocked
+	sortInProgress := make(chan struct{})
+	var sortProgressCounter int32
+	
+	// Comparison function that blocks indefinitely until context is cancelled
+	lessFunc := func(a, b extsort.SortType) bool {
+		// Signal that we're now inside sort.Sort()
+		if atomic.AddInt32(&sortProgressCounter, 1) == 1 {
+			close(sortInProgress)
+		}
+		
+		// Block indefinitely - this simulates a slow comparison that would
+		// prevent the sortChunks() function from checking context cancellation
+		select {
+		case <-time.After(10 * time.Second):
+			// This should never happen in a working test
+			return false  
+		}
+	}
+	
+	sort, _, _ := extsort.New(inputChan, fromBytesForTest, lessFunc, config)
+	ctx, cf := context.WithCancel(context.Background())
+	defer cf()
+	
+	// Add exactly enough data to trigger one chunk that needs sorting
+	inputChan <- val{Key: 2, Order: 1}
+	inputChan <- val{Key: 1, Order: 2}
+	close(inputChan)
+	
+	waitCh := make(chan struct{})
+	go func() {
+		defer close(waitCh)
+		sort.Sort(ctx)
+	}()
+	
+	// Wait for the sort operation to be blocked in lessFunc
+	select {
+	case <-sortInProgress:
+		// Now we know sort.Sort() is blocked in the comparison function
+		time.Sleep(50 * time.Millisecond) // Ensure it's well into the blocking call
+		cf() // Cancel the context while sort.Sort() is definitely blocked
+	case <-time.After(5 * time.Second):
+		cf()
+		t.Fatal("sort operation never started")
+	}
+	
+	// With the deadlock bug, this will timeout because sortChunks() cannot 
+	// check context cancellation while blocked in sort.Sort()
+	select {
+	case <-waitCh:
+		// Sort completed - this should only happen with the fix
+	case <-time.After(3 * time.Second):
+		t.Fatal("deadlock detected - context cancellation not handled during sort.Sort()")
 	}
 }
