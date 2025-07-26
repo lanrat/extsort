@@ -1,11 +1,10 @@
-package extsort_test
+package main
 
 import (
 	"context"
 	"encoding/binary"
 	"fmt"
 	"math/rand"
-	"testing"
 
 	"github.com/lanrat/extsort"
 )
@@ -52,8 +51,4 @@ func main() {
 	if err := <-errChan; err != nil {
 		fmt.Printf("err: %s", err.Error())
 	}
-}
-
-func testMain(t *testing.T) {
-	main()
 }
