@@ -5,6 +5,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/binary"
+	"fmt"
 	"io"
 	"sort"
 	"sync"
@@ -22,15 +23,14 @@ type chunk struct {
 	less CompareLessFunc
 }
 
-
 // getChunk retrieves a chunk from the pool and initializes it
 func (s *SortTypeSorter) getChunk() *chunk {
 	c := s.pools.chunkPool.Get().(*chunk)
-	
+
 	// Get a slice pointer from the pool
 	slicePtr := s.pools.slicePool.Get().(*[]SortType)
 	*slicePtr = (*slicePtr)[:0] // Reset length but keep capacity
-	
+
 	c.data = *slicePtr
 	c.less = s.lessFunc
 	return c
@@ -43,7 +43,7 @@ func (s *SortTypeSorter) putChunk(c *chunk) {
 		data := c.data
 		c.data = nil // Clear reference before putting
 		s.pools.slicePool.Put(&data)
-		
+
 		// Return the chunk to the pool
 		s.pools.chunkPool.Put(c)
 	}
@@ -108,7 +108,7 @@ func newSorter(i chan SortType, fromBytes FromBytes, lessFunc CompareLessFunc, c
 // initMemoryPools initializes sync.Pool instances for memory reuse
 func (s *SortTypeSorter) initMemoryPools() *memoryPools {
 	pools := &memoryPools{}
-	
+
 	// Pool for chunk objects
 	pools.chunkPool = sync.Pool{
 		New: func() interface{} {
@@ -117,7 +117,7 @@ func (s *SortTypeSorter) initMemoryPools() *memoryPools {
 			}
 		},
 	}
-	
+
 	// Pool for SortType slices - store pointers to slices
 	pools.slicePool = sync.Pool{
 		New: func() interface{} {
@@ -125,7 +125,7 @@ func (s *SortTypeSorter) initMemoryPools() *memoryPools {
 			return &slice
 		},
 	}
-	
+
 	// Pool for byte slices (for serialization) - store pointers to slices
 	pools.byteSlicePool = sync.Pool{
 		New: func() interface{} {
@@ -133,7 +133,7 @@ func (s *SortTypeSorter) initMemoryPools() *memoryPools {
 			return &slice
 		},
 	}
-	
+
 	// Pool for scratch buffers (for binary encoding) - store pointers to slices
 	pools.scratchPool = sync.Pool{
 		New: func() interface{} {
@@ -141,7 +141,7 @@ func (s *SortTypeSorter) initMemoryPools() *memoryPools {
 			return &slice
 		},
 	}
-	
+
 	return pools
 }
 
@@ -253,18 +253,30 @@ func (s *SortTypeSorter) sortChunks() error {
 		select {
 		case b, more := <-s.chunkChan:
 			if more {
-				// Create a channel to signal when sorting is complete
-				sortDone := make(chan struct{})
-				
+				// Create channels to communicate completion and errors
+				sortDone := make(chan error, 1)
+
 				// Run sort in a separate goroutine
 				go func() {
-					defer close(sortDone)
+					defer func() {
+						// Recover from panics in comparison function
+						if r := recover(); r != nil {
+							sortDone <- fmt.Errorf("comparison function panic: %v", r)
+						} else {
+							sortDone <- nil // Success
+						}
+					}()
 					sort.Sort(b)
 				}()
-				
+
 				// Wait for either sort completion or context cancellation
 				select {
-				case <-sortDone:
+				case sortErr := <-sortDone:
+					if sortErr != nil {
+						// Sort failed due to panic
+						s.putChunk(b) // Return chunk to pool
+						return sortErr
+					}
 					// Sort completed successfully, proceed to save
 					select {
 					case s.saveChunkChan <- b:
@@ -285,14 +297,17 @@ func (s *SortTypeSorter) sortChunks() error {
 }
 
 // saveChunks is a worker for saving sorted data to disk
-func (s *SortTypeSorter) saveChunks() error {
-	var err error
+func (s *SortTypeSorter) saveChunks() (err error) {
 	scratchPtr := s.pools.scratchPool.Get().(*[]byte)
 	scratch := *scratchPtr
 	defer func() {
 		s.pools.scratchPool.Put(scratchPtr)
+		// Recover from panics in ToBytes() calls
+		if r := recover(); r != nil {
+			err = fmt.Errorf("serialization panic: %v", r)
+		}
 	}()
-	
+
 	for {
 		select {
 		case b, more := <-s.saveChunkChan:
@@ -406,20 +421,20 @@ func (s *SortTypeSorter) mergeNChunksSingleThreaded(ctx context.Context) {
 func (s *SortTypeSorter) mergeNChunksParallel(ctx context.Context) {
 	numChunks := s.tempReader.Size()
 	numWorkers := s.config.NumMergeWorkers
-	
+
 	// Create intermediate channels for each worker
 	intermediateChanSize := s.config.SortedChanBuffSize
 	intermediateChans := make([]chan SortType, numWorkers)
 	for i := range intermediateChans {
 		intermediateChans[i] = make(chan SortType, intermediateChanSize)
 	}
-	
+
 	errChan := make(chan error, numWorkers)
-	
+
 	// Divide chunks among workers and start them
 	chunksPerWorker := (numChunks + numWorkers - 1) / numWorkers
 	workersStarted := 0
-	
+
 	for i := 0; i < numWorkers; i++ {
 		startChunk := i * chunksPerWorker
 		endChunk := (i + 1) * chunksPerWorker
@@ -430,10 +445,10 @@ func (s *SortTypeSorter) mergeNChunksParallel(ctx context.Context) {
 			break
 		}
 		workersStarted++
-		
+
 		go s.mergeWorker(ctx, startChunk, endChunk, intermediateChans[i], errChan)
 	}
-	
+
 	// Final merge of intermediate results using priority queue
 	s.finalMergeStreaming(ctx, intermediateChans[:workersStarted], errChan)
 }
@@ -441,7 +456,7 @@ func (s *SortTypeSorter) mergeNChunksParallel(ctx context.Context) {
 // mergeWorker merges a subset of chunks and sends results to output channel
 func (s *SortTypeSorter) mergeWorker(ctx context.Context, startChunk, endChunk int, output chan<- SortType, errChan chan<- error) {
 	defer close(output)
-	
+
 	pq := queue.NewPriorityQueue(func(a, b interface{}) bool {
 		return s.lessFunc(a.(*mergeFile).nextRec, b.(*mergeFile).nextRec)
 	})
@@ -475,7 +490,7 @@ func (s *SortTypeSorter) mergeWorker(ctx context.Context, startChunk, endChunk i
 		} else {
 			pq.Pop()
 		}
-		
+
 		select {
 		case output <- rec:
 		case <-ctx.Done():
@@ -483,7 +498,7 @@ func (s *SortTypeSorter) mergeWorker(ctx context.Context, startChunk, endChunk i
 			return
 		}
 	}
-	
+
 	errChan <- nil // Signal successful completion
 }
 
@@ -494,7 +509,7 @@ func (s *SortTypeSorter) finalMergeStreaming(ctx context.Context, intermediateCh
 	pq := queue.NewPriorityQueue(func(a, b interface{}) bool {
 		return s.lessFunc(a.(*channelMergeSource).nextRec, b.(*channelMergeSource).nextRec)
 	})
-	
+
 	// Initialize sources
 	for i, ch := range intermediateChans {
 		source := &channelMergeSource{ch: ch}
@@ -503,7 +518,7 @@ func (s *SortTypeSorter) finalMergeStreaming(ctx context.Context, intermediateCh
 			pq.Push(source)
 		}
 	}
-	
+
 	// Wait for workers to complete and collect any errors
 	go func() {
 		errCount := 0
@@ -521,18 +536,18 @@ func (s *SortTypeSorter) finalMergeStreaming(ctx context.Context, intermediateCh
 			}
 		}
 	}()
-	
+
 	// Perform final streaming merge
 	for pq.Len() > 0 {
 		source := pq.Peek().(*channelMergeSource)
-		
+
 		select {
 		case s.mergeChunkChan <- source.nextRec:
 		case <-ctx.Done():
 			s.mergeErrChan <- ctx.Err()
 			return
 		}
-		
+
 		if source.getNext() {
 			pq.PeekUpdate()
 		} else {
@@ -584,6 +599,13 @@ func (m *mergeFile) getNext() (SortType, bool, error) {
 		return nil, false, err
 	}
 
+	// Recover from panics in fromBytes() calls
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("deserialization panic: %v", r)
+		}
+	}()
+
 	m.nextRec = m.fromBytes(newRecBytes)
-	return old, true, nil
+	return old, true, err
 }
