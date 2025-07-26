@@ -334,3 +334,42 @@ func TestDeadLockContextCancelDeterministic(t *testing.T) {
 		t.Fatal("deadlock detected - context cancellation not handled during sort.Sort()")
 	}
 }
+
+// TestParallelMerging tests that parallel merging is used for large datasets
+func TestParallelMerging(t *testing.T) {
+	inputChan := make(chan extsort.SortType, 100)
+	config := extsort.DefaultConfig()
+	config.ChunkSize = 5     // Small chunks to force many chunks
+	config.NumMergeWorkers = 3 // Force parallel merging
+	
+	// Add enough data to trigger parallel merging (more chunks than merge workers)
+	for i := 0; i < 20; i++ {
+		inputChan <- val{Key: 20 - i, Order: i} // Reverse order to test sorting
+	}
+	close(inputChan)
+	
+	sort, outChan, errChan := extsort.New(inputChan, fromBytesForTest, KeyLessThan, config)
+	sort.Sort(context.Background())
+	
+	// Collect and verify results
+	var results []val
+	for rec := range outChan {
+		results = append(results, rec.(val))
+	}
+	
+	if err := <-errChan; err != nil {
+		t.Fatalf("sort error: %v", err)
+	}
+	
+	// Verify sorting worked correctly
+	if len(results) != 20 {
+		t.Fatalf("expected 20 results, got %d", len(results))
+	}
+	
+	for i := 1; i < len(results); i++ {
+		if results[i-1].Key > results[i].Key {
+			t.Fatalf("results not sorted: %d > %d at positions %d, %d", 
+				results[i-1].Key, results[i].Key, i-1, i)
+		}
+	}
+}

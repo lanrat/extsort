@@ -243,11 +243,9 @@ func (s *SortTypeSorter) saveChunks() error {
 }
 
 // mergeNChunks runs asynchronously in the background feeding data to getNext
-// sends errors to s.mergeErrorChan
+// sends errors to s.mergeErrorChan. Uses parallel merging for better performance.
 func (s *SortTypeSorter) mergeNChunks(ctx context.Context) {
-	//populate queue with data from mergeFile list
 	defer close(s.mergeChunkChan)
-	// close temp file when done
 	defer func() {
 		err := s.tempReader.Close()
 		if err != nil {
@@ -255,6 +253,24 @@ func (s *SortTypeSorter) mergeNChunks(ctx context.Context) {
 		}
 	}()
 	defer close(s.mergeErrChan)
+
+	numChunks := s.tempReader.Size()
+	if numChunks == 0 {
+		return
+	}
+
+	// For small number of chunks, use single-threaded merge
+	if numChunks <= s.config.NumMergeWorkers {
+		s.mergeNChunksSingleThreaded(ctx)
+		return
+	}
+
+	// Use parallel merging for many chunks
+	s.mergeNChunksParallel(ctx)
+}
+
+// mergeNChunksSingleThreaded is the original single-threaded implementation
+func (s *SortTypeSorter) mergeNChunksSingleThreaded(ctx context.Context) {
 	pq := queue.NewPriorityQueue(func(a, b interface{}) bool {
 		return s.lessFunc(a.(*mergeFile).nextRec, b.(*mergeFile).nextRec)
 	})
@@ -290,10 +306,166 @@ func (s *SortTypeSorter) mergeNChunks(ctx context.Context) {
 		select {
 		case s.mergeChunkChan <- rec:
 		case <-ctx.Done():
-			s.mergeErrChan <- err
+			s.mergeErrChan <- ctx.Err()
 			return
 		}
 	}
+}
+
+// mergeNChunksParallel implements parallel k-way merging
+func (s *SortTypeSorter) mergeNChunksParallel(ctx context.Context) {
+	numChunks := s.tempReader.Size()
+	numWorkers := s.config.NumMergeWorkers
+	
+	// Create intermediate channels for each worker
+	intermediateChanSize := s.config.SortedChanBuffSize
+	intermediateChans := make([]chan SortType, numWorkers)
+	for i := range intermediateChans {
+		intermediateChans[i] = make(chan SortType, intermediateChanSize)
+	}
+	
+	errChan := make(chan error, numWorkers)
+	
+	// Divide chunks among workers and start them
+	chunksPerWorker := (numChunks + numWorkers - 1) / numWorkers
+	workersStarted := 0
+	
+	for i := 0; i < numWorkers; i++ {
+		startChunk := i * chunksPerWorker
+		endChunk := (i + 1) * chunksPerWorker
+		if endChunk > numChunks {
+			endChunk = numChunks
+		}
+		if startChunk >= numChunks {
+			break
+		}
+		workersStarted++
+		
+		go s.mergeWorker(ctx, startChunk, endChunk, intermediateChans[i], errChan)
+	}
+	
+	// Final merge of intermediate results using priority queue
+	s.finalMergeStreaming(ctx, intermediateChans[:workersStarted], errChan)
+}
+
+// mergeWorker merges a subset of chunks and sends results to output channel
+func (s *SortTypeSorter) mergeWorker(ctx context.Context, startChunk, endChunk int, output chan<- SortType, errChan chan<- error) {
+	defer close(output)
+	
+	pq := queue.NewPriorityQueue(func(a, b interface{}) bool {
+		return s.lessFunc(a.(*mergeFile).nextRec, b.(*mergeFile).nextRec)
+	})
+
+	// Initialize merge files for this worker's chunk range
+	for i := startChunk; i < endChunk; i++ {
+		merge := new(mergeFile)
+		merge.fromBytes = s.fromBytes
+		merge.reader = s.tempReader.Read(i)
+		_, ok, err := merge.getNext()
+		if err == io.EOF || !ok {
+			continue
+		}
+		if err != nil {
+			errChan <- err
+			return
+		}
+		pq.Push(merge)
+	}
+
+	// Merge this worker's chunks
+	for pq.Len() > 0 {
+		merge := pq.Peek().(*mergeFile)
+		rec, more, err := merge.getNext()
+		if err != nil {
+			errChan <- err
+			return
+		}
+		if more {
+			pq.PeekUpdate()
+		} else {
+			pq.Pop()
+		}
+		
+		select {
+		case output <- rec:
+		case <-ctx.Done():
+			errChan <- ctx.Err()
+			return
+		}
+	}
+	
+	errChan <- nil // Signal successful completion
+}
+
+// finalMergeStreaming performs streaming merge of intermediate results
+func (s *SortTypeSorter) finalMergeStreaming(ctx context.Context, intermediateChans []chan SortType, errChan <-chan error) {
+	// Create merge sources for each intermediate channel
+	mergeSources := make([]*channelMergeSource, len(intermediateChans))
+	pq := queue.NewPriorityQueue(func(a, b interface{}) bool {
+		return s.lessFunc(a.(*channelMergeSource).nextRec, b.(*channelMergeSource).nextRec)
+	})
+	
+	// Initialize sources
+	for i, ch := range intermediateChans {
+		source := &channelMergeSource{ch: ch}
+		if source.getNext() {
+			mergeSources[i] = source
+			pq.Push(source)
+		}
+	}
+	
+	// Wait for workers to complete and collect any errors
+	go func() {
+		errCount := 0
+		for errCount < len(intermediateChans) {
+			select {
+			case err := <-errChan:
+				errCount++
+				if err != nil {
+					s.mergeErrChan <- err
+					return
+				}
+			case <-ctx.Done():
+				s.mergeErrChan <- ctx.Err()
+				return
+			}
+		}
+	}()
+	
+	// Perform final streaming merge
+	for pq.Len() > 0 {
+		source := pq.Peek().(*channelMergeSource)
+		
+		select {
+		case s.mergeChunkChan <- source.nextRec:
+		case <-ctx.Done():
+			s.mergeErrChan <- ctx.Err()
+			return
+		}
+		
+		if source.getNext() {
+			pq.PeekUpdate()
+		} else {
+			pq.Pop()
+		}
+	}
+}
+
+// channelMergeSource represents a source of sorted data from a channel
+type channelMergeSource struct {
+	ch      <-chan SortType
+	nextRec SortType
+	hasNext bool
+}
+
+func (c *channelMergeSource) getNext() bool {
+	if rec, ok := <-c.ch; ok {
+		c.nextRec = rec
+		c.hasNext = true
+		return true
+	}
+	c.hasNext = false
+	return false
 }
 
 // mergeFile represents each sorted chunk on disk and its next value

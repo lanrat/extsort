@@ -4,6 +4,7 @@ package extsort
 type Config struct {
 	ChunkSize          int    // amount of records to store in each chunk which will be written to disk
 	NumWorkers         int    // maximum number of workers to use for parallel sorting
+	NumMergeWorkers    int    // maximum number of workers to use for parallel merging
 	ChanBuffSize       int    // buffer size for merging chunks
 	SortedChanBuffSize int    // buffer size for passing records to output
 	TempFilesDir       string // empty for use OS default ex: /tmp
@@ -14,6 +15,7 @@ func DefaultConfig() *Config {
 	return &Config{
 		ChunkSize:          int(1e6), // 1M
 		NumWorkers:         2,
+		NumMergeWorkers:    2,
 		ChanBuffSize:       1,
 		SortedChanBuffSize: 10,
 		TempFilesDir:       "",
@@ -31,6 +33,9 @@ func mergeConfig(c *Config) *Config {
 	}
 	if c.NumWorkers <= 1 {
 		c.NumWorkers = d.NumWorkers
+	}
+	if c.NumMergeWorkers <= 1 {
+		c.NumMergeWorkers = d.NumMergeWorkers
 	}
 	if c.ChanBuffSize < 0 {
 		c.ChanBuffSize = d.ChanBuffSize

@@ -16,6 +16,6 @@ func TestStringsInterface(t *testing.T) {
 	onlySortersAllowed(s)
 }
 
-func onlySortersAllowed(s extsort.Sorter) bool {
+func onlySortersAllowed(_ extsort.Sorter) bool {
 	return true
 }
