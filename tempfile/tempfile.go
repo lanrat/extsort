@@ -8,7 +8,6 @@ import (
 	"bufio"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"os"
 )
 
@@ -38,7 +37,7 @@ type fileReader struct {
 func New(dir string) (*FileWriter, error) {
 	var w FileWriter
 	var err error
-	w.file, err = ioutil.TempFile(dir, mergeFilenamePrefix)
+	w.file, err = os.CreateTemp(dir, mergeFilenamePrefix)
 	if err != nil {
 		return nil, err
 	}
