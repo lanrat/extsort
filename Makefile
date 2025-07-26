@@ -4,11 +4,14 @@ include version.mk
 
 ALL_SOURCES := $(shell find . -type f -name '*.go')
 
-.PHONY: fmt check test cover coverhtml
+.PHONY: fmt check test cover coverhtml example
 
 test:
 	go test -v ./...
 	@echo "< ALL TESTS PASS >"
+
+example:
+	go run example/example.go >/dev/null
 
 update-deps: go.mod
 	GOPROXY=direct go get -u ./...
