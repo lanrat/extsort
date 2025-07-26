@@ -1,3 +1,6 @@
+default: test
+
+include version.mk
 
 ALL_SOURCES := $(shell find . -type f -name '*.go')
 
