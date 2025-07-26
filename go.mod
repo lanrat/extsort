@@ -1,5 +1,7 @@
 module github.com/lanrat/extsort
 
-go 1.13
+go 1.23.0
 
-require golang.org/x/sync v0.1.0
+toolchain go1.24.5
+
+require golang.org/x/sync v0.16.0
