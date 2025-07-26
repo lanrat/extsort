@@ -7,8 +7,8 @@ VERSION ?= $(shell git describe --tags --always --dirty)
 
 
 # Release target to create a new semantic version tag
-.PHONY: release-tag
-release-tag: check
+.PHONY: release
+release:
     # This shell 'if' statement runs at execution time, not parse time.
 	@if [ -z "$(BUMP)" ]; then \
 		echo "Error: BUMP is not set. Usage: make release BUMP=patch|minor|major"; \
@@ -45,5 +45,5 @@ release-tag: check
 	NEW_TAG="v$${MAJOR}.$${MINOR}.$${PATCH}"; \
 	echo "Current version: $$CURRENT_TAG"; \
 	echo "Creating new version: $$NEW_TAG"; \
-	#git tag $$NEW_TAG; \
-	#git push origin $$NEW_TAG;
+	git tag $$NEW_TAG; \
+	git push origin $$NEW_TAG;
