@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"io"
 	"sort"
+	"sync"
 
 	"github.com/lanrat/extsort/queue"
 	"github.com/lanrat/extsort/tempfile"
@@ -19,11 +20,31 @@ type chunk struct {
 	less CompareLessFunc
 }
 
-func newChunk(size int, lessFunc CompareLessFunc) *chunk {
-	c := new(chunk)
-	c.less = lessFunc
-	c.data = make([]SortType, 0, size)
+
+// getChunk retrieves a chunk from the pool and initializes it
+func (s *SortTypeSorter) getChunk() *chunk {
+	c := s.pools.chunkPool.Get().(*chunk)
+	
+	// Get a slice pointer from the pool
+	slicePtr := s.pools.slicePool.Get().(*[]SortType)
+	*slicePtr = (*slicePtr)[:0] // Reset length but keep capacity
+	
+	c.data = *slicePtr
+	c.less = s.lessFunc
 	return c
+}
+
+// putChunk returns a chunk to the pool for reuse
+func (s *SortTypeSorter) putChunk(c *chunk) {
+	if c != nil && c.data != nil {
+		// Return the slice to the pool
+		data := c.data
+		c.data = nil // Clear reference before putting
+		s.pools.slicePool.Put(&data)
+		
+		// Return the chunk to the pool
+		s.pools.chunkPool.Put(c)
+	}
 }
 
 func (c *chunk) Len() int {
@@ -36,6 +57,14 @@ func (c *chunk) Swap(i, j int) {
 
 func (c *chunk) Less(i, j int) bool {
 	return c.less(c.data[i], c.data[j])
+}
+
+// memoryPools holds sync.Pool instances for memory reuse
+type memoryPools struct {
+	chunkPool     sync.Pool // *chunk objects
+	slicePool     sync.Pool // []SortType slices
+	byteSlicePool sync.Pool // []byte slices for serialization
+	scratchPool   sync.Pool // scratch buffers for binary encoding
 }
 
 // SortTypeSorter stores an input chan and feeds Sort to return a sorted chan
@@ -52,6 +81,7 @@ type SortTypeSorter struct {
 	mergeChunkChan chan SortType
 	lessFunc       CompareLessFunc
 	fromBytes      FromBytes
+	pools          *memoryPools
 }
 
 func newSorter(i chan SortType, fromBytes FromBytes, lessFunc CompareLessFunc, config *Config) *SortTypeSorter {
@@ -64,7 +94,48 @@ func newSorter(i chan SortType, fromBytes FromBytes, lessFunc CompareLessFunc, c
 	s.saveChunkChan = make(chan *chunk, s.config.ChanBuffSize)
 	s.mergeChunkChan = make(chan SortType, s.config.SortedChanBuffSize)
 	s.mergeErrChan = make(chan error, 1)
+	s.pools = s.initMemoryPools()
 	return s
+}
+
+// initMemoryPools initializes sync.Pool instances for memory reuse
+func (s *SortTypeSorter) initMemoryPools() *memoryPools {
+	pools := &memoryPools{}
+	
+	// Pool for chunk objects
+	pools.chunkPool = sync.Pool{
+		New: func() interface{} {
+			return &chunk{
+				less: s.lessFunc,
+			}
+		},
+	}
+	
+	// Pool for SortType slices - store pointers to slices
+	pools.slicePool = sync.Pool{
+		New: func() interface{} {
+			slice := make([]SortType, 0, s.config.ChunkSize)
+			return &slice
+		},
+	}
+	
+	// Pool for byte slices (for serialization) - store pointers to slices
+	pools.byteSlicePool = sync.Pool{
+		New: func() interface{} {
+			slice := make([]byte, 0, 1024) // Start with 1KB capacity
+			return &slice
+		},
+	}
+	
+	// Pool for scratch buffers (for binary encoding) - store pointers to slices
+	pools.scratchPool = sync.Pool{
+		New: func() interface{} {
+			slice := make([]byte, binary.MaxVarintLen64)
+			return &slice
+		},
+	}
+	
+	return pools
 }
 
 // New returns a new Sorter instance that can be used to sort the input chan
@@ -143,7 +214,7 @@ func (s *SortTypeSorter) buildChunks() error {
 	defer close(s.chunkChan) // if this is not called on error, causes a deadlock
 
 	for {
-		c := newChunk(s.config.ChunkSize, s.lessFunc)
+		c := s.getChunk()
 		for i := 0; i < s.config.ChunkSize; i++ {
 			select {
 			case rec, ok := <-s.input:
@@ -152,11 +223,13 @@ func (s *SortTypeSorter) buildChunks() error {
 				}
 				c.data = append(c.data, rec)
 			case <-s.buildSortCtx.Done():
+				s.putChunk(c) // Return unused chunk to pool
 				return s.buildSortCtx.Err()
 			}
 		}
 		if len(c.data) == 0 {
-			// the chunk is empty
+			// the chunk is empty, return it to pool
+			s.putChunk(c)
 			break
 		}
 
@@ -207,7 +280,12 @@ func (s *SortTypeSorter) sortChunks() error {
 // saveChunks is a worker for saving sorted data to disk
 func (s *SortTypeSorter) saveChunks() error {
 	var err error
-	scratch := make([]byte, binary.MaxVarintLen64)
+	scratchPtr := s.pools.scratchPool.Get().(*[]byte)
+	scratch := *scratchPtr
+	defer func() {
+		s.pools.scratchPool.Put(scratchPtr)
+	}()
+	
 	for {
 		select {
 		case b, more := <-s.saveChunkChan:
@@ -218,18 +296,23 @@ func (s *SortTypeSorter) saveChunks() error {
 					n := binary.PutUvarint(scratch, uint64(len(raw)))
 					_, err = s.tempWriter.Write(scratch[:n])
 					if err != nil {
+						s.putChunk(b) // Return chunk to pool on error
 						return err
 					}
 					// add data
 					_, err = s.tempWriter.Write(raw)
 					if err != nil {
+						s.putChunk(b) // Return chunk to pool on error
 						return err
 					}
 				}
 				_, err = s.tempWriter.Next()
 				if err != nil {
+					s.putChunk(b) // Return chunk to pool on error
 					return err
 				}
+				// Successfully processed chunk, return to pool
+				s.putChunk(b)
 			} else {
 				s.tempReader, err = s.tempWriter.Save()
 				return err
