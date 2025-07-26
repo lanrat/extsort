@@ -20,6 +20,10 @@ func TestSerializationError(t *testing.T) {
 	inputChan <- &errorVal{shouldFail: true} // This will fail ToBytes()
 	close(inputChan)
 
+	// Use small chunk size to force multiple chunks and ensure serialization occurs
+	config := extsort.DefaultConfig()
+	config.ChunkSize = 2
+	
 	sort, outChan, errChan := extsort.New(inputChan, fromBytesForTest, func(a, b extsort.SortType) bool {
 		// Handle mixed types safely
 		av, aok := a.(val)
@@ -28,7 +32,7 @@ func TestSerializationError(t *testing.T) {
 			return av.Key < bv.Key
 		}
 		return false // Fallback for error types
-	}, nil)
+	}, config)
 
 	sort.Sort(context.Background())
 

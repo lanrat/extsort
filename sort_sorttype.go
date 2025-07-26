@@ -87,6 +87,8 @@ type SortTypeSorter struct {
 	lessFunc       CompareLessFunc
 	fromBytes      FromBytes
 	pools          *memoryPools
+	numChunks      int   // track number of chunks for optimization
+	singleChunk    *chunk // stored single chunk for optimization
 }
 
 // newSorter creates a new SortTypeSorter instance with the given configuration.
@@ -152,14 +154,8 @@ func (s *SortTypeSorter) initMemoryPools() *memoryPools {
 // if errors or interrupted, may leave temp files behind in config.TempFilesDir
 // the returned channels contain the data returned from calling Sort()
 func New(i chan SortType, fromBytes FromBytes, lessFunc CompareLessFunc, config *Config) (*SortTypeSorter, chan SortType, chan error) {
-	var err error
 	s := newSorter(i, fromBytes, lessFunc, config)
-	s.tempWriter, err = tempfile.New(s.config.TempFilesDir)
-	if err != nil {
-		s.mergeErrChan <- err
-		close(s.mergeErrChan)
-		close(s.mergeChunkChan)
-	}
+	// tempWriter will be created later if needed (when numChunks > 1)
 	return s, s.mergeChunkChan, s.mergeErrChan
 }
 
@@ -190,8 +186,17 @@ func (s *SortTypeSorter) Sort(ctx context.Context) {
 		buildSortErrGroup.Go(s.sortChunks)
 	}
 
-	// save chunks
-	saveErrGroup.Go(s.saveChunks)
+	// Determine if we can optimize for single chunk (non-Mock only)
+	canOptimizeForSingleChunk := s.tempWriter == nil
+
+	// Start save worker - either optimized single chunk or normal save
+	if canOptimizeForSingleChunk {
+		// We'll decide after buildSort finishes if we can optimize
+		saveErrGroup.Go(s.conditionalSaveOrOutput)
+	} else {
+		// Mock or multiple chunks - use normal save
+		saveErrGroup.Go(s.saveChunks)
+	}
 
 	err := buildSortErrGroup.Wait()
 	if err != nil {
@@ -211,9 +216,26 @@ func (s *SortTypeSorter) Sort(ctx context.Context) {
 		return
 	}
 
-	// read chunks and merge
-	// if this errors, it is returned in the errorChan
-	go s.mergeNChunks(ctx)
+	// For multiple chunks (or if optimization wasn't applied), read chunks and merge
+	if s.numChunks > 1 || !canOptimizeForSingleChunk {
+		// Create temp file if needed
+		if s.tempWriter == nil {
+			s.tempWriter, err = tempfile.New(s.config.TempFilesDir)
+			if err != nil {
+				s.mergeErrChan <- err
+				close(s.mergeErrChan)
+				close(s.mergeChunkChan)
+				return
+			}
+		}
+		
+		// read chunks and merge
+		// if this errors, it is returned in the errorChan
+		go s.mergeNChunks(ctx)
+	} else if s.singleChunk != nil {
+		// Single chunk optimization - output directly
+		go s.outputSingleChunk(ctx)
+	}
 }
 
 // buildChunks reads data from the input chan to builds chunks and pushes them to chunkChan
@@ -241,6 +263,7 @@ func (s *SortTypeSorter) buildChunks() error {
 		}
 
 		// chunk is now full
+		s.numChunks++
 		s.chunkChan <- c
 	}
 
@@ -609,3 +632,195 @@ func (m *mergeFile) getNext() (SortType, bool, error) {
 	m.nextRec = m.fromBytes(newRecBytes)
 	return old, true, err
 }
+
+// conditionalSaveOrOutput decides whether to use single chunk optimization or normal save  
+func (s *SortTypeSorter) conditionalSaveOrOutput() error {
+	// Wait to see how many chunks we get
+	firstChunk, more := <-s.saveChunkChan
+	if !more {
+		// No chunks at all - close output channels and return
+		close(s.mergeErrChan)
+		close(s.mergeChunkChan)
+		return nil
+	}
+
+	// Check if there's only one chunk
+	select {
+	case secondChunk, hasSecond := <-s.saveChunkChan:
+		if hasSecond {
+			// Multiple chunks - create temp file and use normal save process
+			var err error
+			s.tempWriter, err = tempfile.New(s.config.TempFilesDir)
+			if err != nil {
+				s.putChunk(firstChunk)
+				s.putChunk(secondChunk)
+				return err
+			}
+
+			// Process the chunks we already received
+			if err := s.saveChunkToFile(firstChunk); err != nil {
+				s.putChunk(secondChunk)
+				return err
+			}
+			if err := s.saveChunkToFile(secondChunk); err != nil {
+				return err
+			}
+
+			// Continue with normal save process for remaining chunks
+			return s.saveRemainingChunks()
+		}
+		// Channel was closed, only one chunk - store it for later
+		s.singleChunk = firstChunk
+		return nil
+	case <-s.saveCtx.Done():
+		s.putChunk(firstChunk)
+		return s.saveCtx.Err()
+	}
+}
+
+// outputSingleChunk outputs a single chunk directly without disk I/O
+func (s *SortTypeSorter) outputSingleChunk(ctx context.Context) {
+	defer close(s.mergeErrChan)
+	defer close(s.mergeChunkChan)
+	defer s.putChunk(s.singleChunk)
+
+	if s.singleChunk == nil {
+		return
+	}
+
+	// Output the sorted data directly (chunk is already sorted by sortChunks)
+	for _, record := range s.singleChunk.data {
+		select {
+		case s.mergeChunkChan <- record:
+		case <-ctx.Done():
+			s.mergeErrChan <- ctx.Err()
+			return
+		}
+	}
+}
+
+// outputSingleChunkDirectly outputs a single chunk directly without disk I/O
+func (s *SortTypeSorter) outputSingleChunkDirectly(chunk *chunk) error {
+	if chunk == nil {
+		// No data, but still need to close channels
+		close(s.mergeErrChan)
+		close(s.mergeChunkChan)
+		return nil
+	}
+
+	// Start a goroutine to output the data and close channels
+	go func() {
+		defer close(s.mergeErrChan)
+		defer close(s.mergeChunkChan)
+		defer s.putChunk(chunk) // Clean up chunk after we're done with it
+
+		// Output the sorted data directly (chunk is already sorted by sortChunks)
+		for _, record := range chunk.data {
+			select {
+			case s.mergeChunkChan <- record:
+			case <-s.saveCtx.Done():
+				s.mergeErrChan <- s.saveCtx.Err()
+				return
+			}
+		}
+	}()
+
+	return nil
+}
+
+// saveChunkToFile saves a single chunk to the temp file
+func (s *SortTypeSorter) saveChunkToFile(chunk *chunk) (err error) {
+	defer s.putChunk(chunk)
+
+	if chunk == nil {
+		return nil
+	}
+
+	// This is essentially the same logic as in saveChunks
+	scratchPtr := s.pools.scratchPool.Get().(*[]byte)
+	scratch := *scratchPtr
+	defer func() {
+		s.pools.scratchPool.Put(scratchPtr)
+		// Recover from panics in ToBytes() calls
+		if r := recover(); r != nil {
+			err = fmt.Errorf("serialization panic: %v", r)
+		}
+	}()
+
+	for _, d := range chunk.data {
+		// binary encoding for size
+		raw := d.ToBytes()
+		n := binary.PutUvarint(scratch, uint64(len(raw)))
+		_, err = s.tempWriter.Write(scratch[:n])
+		if err != nil {
+			return err
+		}
+		// add data
+		_, err = s.tempWriter.Write(raw)
+		if err != nil {
+			return err
+		}
+	}
+	_, err = s.tempWriter.Next()
+	return err
+}
+
+// saveRemainingChunks continues the normal save process for remaining chunks
+func (s *SortTypeSorter) saveRemainingChunks() error {
+	// Continue processing remaining chunks from saveChunkChan
+	for {
+		select {
+		case chunk, more := <-s.saveChunkChan:
+			if more {
+				if err := s.saveChunkToFile(chunk); err != nil {
+					return err
+				}
+			} else {
+				// All chunks processed
+				var err error
+				s.tempReader, err = s.tempWriter.Save()
+				return err
+			}
+		case <-s.saveCtx.Done():
+			return s.saveCtx.Err()
+		}
+	}
+}
+
+// outputSingleChunkInMemory handles the case where we have only one chunk and can skip disk I/O
+// This runs in the saveErrGroup and processes the single chunk entirely in memory
+func (s *SortTypeSorter) outputSingleChunkInMemory() error {
+	defer close(s.mergeErrChan)
+	defer close(s.mergeChunkChan)
+
+	// Process chunks from saveChunkChan (should be just one, but handle gracefully)
+	for {
+		select {
+		case singleChunk, more := <-s.saveChunkChan:
+			if !more {
+				// Channel closed, we're done
+				return nil
+			}
+			if singleChunk == nil {
+				continue // Skip nil chunks
+			}
+
+			// Output the sorted data directly (chunk is already sorted by sortChunks)
+			for _, record := range singleChunk.data {
+				select {
+				case s.mergeChunkChan <- record:
+				case <-s.saveCtx.Done():
+					s.putChunk(singleChunk) // Return chunk to pool
+					return s.saveCtx.Err()
+				}
+			}
+
+			// Return chunk to pool
+			s.putChunk(singleChunk)
+
+		case <-s.saveCtx.Done():
+			return s.saveCtx.Err()
+		}
+	}
+}
+
