@@ -10,7 +10,7 @@ type Config struct {
 	TempFilesDir       string // empty for use OS default ex: /tmp
 }
 
-// DefaultConfig returns the default configuration options sued if none provided
+// DefaultConfig returns the default configuration options used if none provided
 func DefaultConfig() *Config {
 	return &Config{
 		ChunkSize:          int(1e6), // 1M
@@ -22,7 +22,8 @@ func DefaultConfig() *Config {
 	}
 }
 
-// mergeConfig takes a provided config and replaces any values not set with the defaults
+// mergeConfig takes a provided config and replaces any values not set with the defaults.
+// If config is nil, returns DefaultConfig().
 func mergeConfig(c *Config) *Config {
 	d := DefaultConfig()
 	if c == nil {

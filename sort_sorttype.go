@@ -15,6 +15,8 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
+// chunk represents a collection of SortType data that can be sorted.
+// It implements sort.Interface for efficient sorting operations.
 type chunk struct {
 	data []SortType
 	less CompareLessFunc
@@ -47,14 +49,17 @@ func (s *SortTypeSorter) putChunk(c *chunk) {
 	}
 }
 
+// Len returns the number of elements in the chunk (implements sort.Interface).
 func (c *chunk) Len() int {
 	return len(c.data)
 }
 
+// Swap swaps the elements with indexes i and j (implements sort.Interface).
 func (c *chunk) Swap(i, j int) {
 	c.data[i], c.data[j] = c.data[j], c.data[i]
 }
 
+// Less reports whether the element with index i should sort before the element with index j (implements sort.Interface).
 func (c *chunk) Less(i, j int) bool {
 	return c.less(c.data[i], c.data[j])
 }
@@ -84,6 +89,8 @@ type SortTypeSorter struct {
 	pools          *memoryPools
 }
 
+// newSorter creates a new SortTypeSorter instance with the given configuration.
+// This is the internal constructor used by New() and NewMock().
 func newSorter(i chan SortType, fromBytes FromBytes, lessFunc CompareLessFunc, config *Config) *SortTypeSorter {
 	s := new(SortTypeSorter)
 	s.input = i
@@ -141,7 +148,7 @@ func (s *SortTypeSorter) initMemoryPools() *memoryPools {
 // New returns a new Sorter instance that can be used to sort the input chan
 // fromBytes is needed to unmarshal SortTypes from []byte on disk
 // lessfunc is the comparator used for SortType
-// config ca be nil to use the defaults, or only set the non-default values desired
+// config can be nil to use the defaults, or only set the non-default values desired
 // if errors or interrupted, may leave temp files behind in config.TempFilesDir
 // the returned channels contain the data returned from calling Sort()
 func New(i chan SortType, fromBytes FromBytes, lessFunc CompareLessFunc, config *Config) (*SortTypeSorter, chan SortType, chan error) {
@@ -156,8 +163,8 @@ func New(i chan SortType, fromBytes FromBytes, lessFunc CompareLessFunc, config 
 	return s, s.mergeChunkChan, s.mergeErrChan
 }
 
-// NewMock is the same as New() but is backed by memory instead of a temporary file on disk
-// n is the size to initialize the backing bytes buffer too
+// NewMock is the same as New() but is backed by memory instead of a temporary file on disk.
+// n is the size to initialize the backing bytes buffer to.
 func NewMock(i chan SortType, fromBytes FromBytes, lessFunc CompareLessFunc, config *Config, n int) (*SortTypeSorter, chan SortType, chan error) {
 	s := newSorter(i, fromBytes, lessFunc, config)
 	s.tempWriter = tempfile.Mock(n)

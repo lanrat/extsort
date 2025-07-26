@@ -19,7 +19,7 @@ type mockFileReader struct {
 	readers  []*bufio.Reader
 }
 
-// Mock returns a new tempfileWrite backed by memory
+// Mock returns a new TempWriter backed by memory
 func Mock(n int) *MockFileWriter {
 	var m MockFileWriter
 	m.data = bytes.NewBuffer(make([]byte, 0, n))

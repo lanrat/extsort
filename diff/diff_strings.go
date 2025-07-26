@@ -141,8 +141,8 @@ func (d *stringDiffer) diff() (r Result, err error) {
 	return
 }
 
-// PrintStringDiff satisfies StringResultFunc can can be used as
-// resultFunc in diff.Strings()
+// PrintStringDiff satisfies StringResultFunc and can be used as
+// resultFunc in diff.Strings().
 func PrintStringDiff(d Delta, s string) error {
 	_, err := fmt.Printf("%s %s\n", d, s)
 	return err

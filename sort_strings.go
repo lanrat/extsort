@@ -60,15 +60,17 @@ func newStringSorter(i chan string, config *Config) *StringSorter {
 	return s
 }
 
-// StringsMock is the same as Strings() but is backed by memory instead of a temporary file on disk
-// n is the size to initialize the backing bytes buffer too
+// StringsMock is the same as Strings() but is backed by memory instead of a temporary file on disk.
+// n is the size to initialize the backing bytes buffer to.
 func StringsMock(i chan string, config *Config, n int) (*StringSorter, chan string, chan error) {
 	s := newStringSorter(i, config)
 	s.tempWriter = tempfile.Mock(n)
 	return s, s.mergeChunkChan, s.mergeErrChan
 }
 
-// Strings returns a new Sorter instance that can be used to sort the input chan
+// Strings returns a new StringSorter instance that can be used to sort the input string channel.
+// config can be nil to use the defaults, or only set the non-default values desired.
+// If errors occur or interrupted, may leave temp files behind in config.TempFilesDir.
 func Strings(i chan string, config *Config) (*StringSorter, chan string, chan error) {
 	var err error
 	s := newStringSorter(i, config)
