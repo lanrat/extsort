@@ -51,7 +51,7 @@ func TestTempMockRepeat(t *testing.T) {
 	tempWriter := tempfile.Mock(10)
 
 	for i := 0; i < iterations; i++ {
-		_, err := tempWriter.WriteString(fmt.Sprintf("%d: %s", i, line))
+		_, err := fmt.Fprintf(tempWriter, "%d: %s", i, line)
 		if err != nil {
 			t.Fatal(err)
 		}

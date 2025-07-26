@@ -290,13 +290,11 @@ func TestDeadLockContextCancelDeterministic(t *testing.T) {
 			close(sortInProgress)
 		}
 		
-		// Block indefinitely - this simulates a slow comparison that would
+		// Block for a long time - this simulates a slow comparison that would
 		// prevent the sortChunks() function from checking context cancellation
-		select {
-		case <-time.After(10 * time.Second):
-			// This should never happen in a working test
-			return false  
-		}
+		time.Sleep(10 * time.Second)
+		// This should never happen in a working test
+		return false
 	}
 	
 	sort, _, _ := extsort.New(inputChan, fromBytesForTest, lessFunc, config)

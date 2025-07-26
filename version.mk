@@ -8,7 +8,7 @@ VERSION ?= $(shell git describe --tags --always --dirty)
 
 # Release target to create a new semantic version tag
 .PHONY: release
-release:
+release: check
     # This shell 'if' statement runs at execution time, not parse time.
 	@if [ -z "$(BUMP)" ]; then \
 		echo "Error: BUMP is not set. Usage: make release BUMP=patch|minor|major"; \

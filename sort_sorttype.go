@@ -235,8 +235,8 @@ func (s *SortTypeSorter) saveChunks() error {
 				return err
 			}
 		case <-s.saveCtx.Done():
-			// delete the temp file from disk (error unchecked)
-			s.tempWriter.Close()
+			// delete the temp file from disk
+			_ = s.tempWriter.Close() // ignore error on cleanup
 			return s.saveCtx.Err()
 		}
 	}
