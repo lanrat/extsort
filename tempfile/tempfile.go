@@ -20,15 +20,18 @@ var mergeFilenamePrefix = fmt.Sprintf("extsort_%d_", os.Getpid())
 
 // FileWriter allows for creating virtual temp files for reading/writing
 type FileWriter struct {
-	file      *os.File
-	bufWriter *bufio.Writer
-	sections  []int64
+	file         *os.File
+	bufWriter    *bufio.Writer
+	sections     []int64
+	needsCleanup bool // true if manual cleanup is needed (Windows)
 }
 
 type fileReader struct {
-	file     *os.File
-	sections []int64
-	readers  []*bufio.Reader
+	file         *os.File
+	sections     []int64
+	readers      []*bufio.Reader
+	needsCleanup bool   // true if manual cleanup is needed (Windows)
+	filename     string // filename for cleanup
 }
 
 // New creates a new tempfile in dir, if dir is empty the OS default is used
@@ -39,6 +42,13 @@ func New(dir string) (*FileWriter, error) {
 	if err != nil {
 		return nil, err
 	}
+	
+	// Try immediate unlink for automatic cleanup (works on Unix)
+	// If it fails (likely Windows), we'll do manual cleanup later
+	if err = os.Remove(w.file.Name()); err != nil {
+		w.needsCleanup = true // Manual cleanup needed
+	}
+	
 	w.bufWriter = bufio.NewWriterSize(w.file, fileBufferSize)
 	w.sections = make([]int64, 0, 10)
 
@@ -60,13 +70,19 @@ func (w *FileWriter) Name() string {
 // closes the file, and removes the temp file from disk
 // works like an abort, unrecoverable
 func (w *FileWriter) Close() error {
+	filename := w.file.Name()
 	err := w.file.Close()
-	if err != nil {
-		return err
-	}
 	w.sections = nil
 	w.bufWriter = nil
-	return os.Remove(w.file.Name())
+	
+	// Only attempt manual cleanup if needed (Windows case)
+	if w.needsCleanup {
+		if removeErr := os.Remove(filename); removeErr != nil && err == nil {
+			err = removeErr
+		}
+	}
+	
+	return err
 }
 
 // Write writes a byte to the current file section
@@ -105,15 +121,23 @@ func (w *FileWriter) Save() (TempReader, error) {
 	if err != nil {
 		return nil, err
 	}
-	err = w.file.Close()
-	if err != nil {
-		return nil, err
+	
+	if w.needsCleanup {
+		// Windows case: close file and reopen for reading
+		filename := w.file.Name()
+		err = w.file.Close()
+		if err != nil {
+			return nil, err
+		}
+		return newTempReader(filename, w.sections, w.needsCleanup)
+	} else {
+		// Unix case: file is unlinked, reuse the same file handle
+		return newTempReaderFromFile(w.file, w.sections, w.needsCleanup)
 	}
-	return newTempReader(w.file.Name(), w.sections)
 }
 
-func newTempReader(filename string, sections []int64) (*fileReader, error) {
-	// create TempReader
+func newTempReader(filename string, sections []int64, needsCleanup bool) (*fileReader, error) {
+	// create TempReader by opening file by name
 	var err error
 	var r fileReader
 	r.file, err = os.Open(filename)
@@ -122,6 +146,27 @@ func newTempReader(filename string, sections []int64) (*fileReader, error) {
 	}
 	r.sections = sections
 	r.readers = make([]*bufio.Reader, len(r.sections))
+	r.needsCleanup = needsCleanup
+	r.filename = filename
+
+	offset := int64(0)
+	for i, end := range r.sections {
+		section := io.NewSectionReader(r.file, offset, end-offset)
+		offset = end
+		r.readers[i] = bufio.NewReaderSize(section, fileBufferSize)
+	}
+
+	return &r, nil
+}
+
+func newTempReaderFromFile(file *os.File, sections []int64, needsCleanup bool) (*fileReader, error) {
+	// create TempReader by reusing existing file handle
+	var r fileReader
+	r.file = file
+	r.sections = sections
+	r.readers = make([]*bufio.Reader, len(r.sections))
+	r.needsCleanup = needsCleanup
+	r.filename = file.Name()
 
 	offset := int64(0)
 	for i, end := range r.sections {
@@ -136,10 +181,15 @@ func newTempReader(filename string, sections []int64) (*fileReader, error) {
 func (r *fileReader) Close() error {
 	r.readers = nil
 	err := r.file.Close()
-	if err != nil {
-		return err
+	
+	// Only attempt manual cleanup if needed (Windows case)
+	if r.needsCleanup {
+		if removeErr := os.Remove(r.filename); removeErr != nil && err == nil {
+			err = removeErr
+		}
 	}
-	return os.Remove(r.file.Name())
+	
+	return err
 }
 
 func (r *fileReader) Size() int {
