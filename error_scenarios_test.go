@@ -3,6 +3,7 @@ package extsort_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -40,7 +41,11 @@ func TestSerializationError(t *testing.T) {
 	// Should now get a proper error instead of panic
 	if err := <-errChan; err != nil {
 		t.Logf("Got expected serialization error: %v", err)
-		// Verify it's our panic recovery error
+		// Verify it's our specific error type
+		var serErr *extsort.SerializationError
+		if !errors.As(err, &serErr) {
+			t.Errorf("Expected SerializationError, got: %T", err)
+		}
 		if !strings.Contains(err.Error(), "serialization panic") {
 			t.Errorf("Expected 'serialization panic' in error message, got: %v", err)
 		}
@@ -81,6 +86,11 @@ func TestDeserializationError(t *testing.T) {
 	// If we get here, check for error
 	if err := <-errChan; err != nil {
 		t.Logf("Got expected deserialization error: %v", err)
+		// Verify it's our specific error type
+		var deserErr *extsort.DeserializationError
+		if !errors.As(err, &deserErr) {
+			t.Errorf("Expected DeserializationError, got: %T", err)
+		}
 	}
 }
 
@@ -238,6 +248,11 @@ func TestComparisonFunctionPanic(t *testing.T) {
 	// Check for error
 	if err := <-errChan; err != nil {
 		t.Logf("Got expected error from panicking comparison: %v", err)
+		// Verify it's our specific error type
+		var compErr *extsort.ComparisonError
+		if !errors.As(err, &compErr) {
+			t.Errorf("Expected ComparisonError, got: %T", err)
+		}
 	}
 }
 

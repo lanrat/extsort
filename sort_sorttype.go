@@ -5,7 +5,6 @@ import (
 	"bufio"
 	"context"
 	"encoding/binary"
-	"fmt"
 	"io"
 	"sort"
 	"sync"
@@ -261,7 +260,7 @@ func (s *SortTypeSorter) sortChunks() error {
 					defer func() {
 						// Recover from panics in comparison function
 						if r := recover(); r != nil {
-							sortDone <- fmt.Errorf("comparison function panic: %v", r)
+							sortDone <- NewComparisonError(r, "SortType", "SortType", "sortChunks")
 						} else {
 							sortDone <- nil // Success
 						}
@@ -304,7 +303,7 @@ func (s *SortTypeSorter) saveChunks() (err error) {
 		s.pools.scratchPool.Put(scratchPtr)
 		// Recover from panics in ToBytes() calls
 		if r := recover(); r != nil {
-			err = fmt.Errorf("serialization panic: %v", r)
+			err = NewSerializationError(r, "saveChunks")
 		}
 	}()
 
@@ -319,25 +318,28 @@ func (s *SortTypeSorter) saveChunks() (err error) {
 					_, err = s.tempWriter.Write(scratch[:n])
 					if err != nil {
 						s.putChunk(b) // Return chunk to pool on error
-						return err
+						return NewDiskError(err, "write size header", "")
 					}
 					// add data
 					_, err = s.tempWriter.Write(raw)
 					if err != nil {
 						s.putChunk(b) // Return chunk to pool on error
-						return err
+						return NewDiskError(err, "write data", "")
 					}
 				}
 				_, err = s.tempWriter.Next()
 				if err != nil {
 					s.putChunk(b) // Return chunk to pool on error
-					return err
+					return NewDiskError(err, "next chunk", "")
 				}
 				// Successfully processed chunk, return to pool
 				s.putChunk(b)
 			} else {
 				s.tempReader, err = s.tempWriter.Save()
-				return err
+				if err != nil {
+					return NewDiskError(err, "save temp file", "")
+				}
+				return nil
 			}
 		case <-s.saveCtx.Done():
 			// delete the temp file from disk
@@ -602,7 +604,7 @@ func (m *mergeFile) getNext() (SortType, bool, error) {
 	// Recover from panics in fromBytes() calls
 	defer func() {
 		if r := recover(); r != nil {
-			err = fmt.Errorf("deserialization panic: %v", r)
+			err = NewDeserializationError(r, len(newRecBytes), "getNext")
 		}
 	}()
 

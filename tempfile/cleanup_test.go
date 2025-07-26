@@ -20,7 +20,7 @@ func TestRobustCleanup(t *testing.T) {
 		}
 
 		filename := writer.Name()
-		
+
 		// Write some data
 		_, err = writer.WriteString("test data")
 		if err != nil {
@@ -55,10 +55,9 @@ func TestRobustCleanup(t *testing.T) {
 			if !os.IsNotExist(err) {
 				t.Errorf("Expected file to be deleted on Windows, but it still exists")
 			}
-		} else {
-			// On Unix, file was unlinked immediately but may still show as not exist
-			// This is expected behavior - the test passes if we got here without errors
 		}
+		// On Unix, file was unlinked immediately but may still show as not exist
+		// This is expected behavior - the test passes if we got here without errors
 	})
 
 	// Test cleanup when writer is closed directly (abort case)
@@ -69,7 +68,7 @@ func TestRobustCleanup(t *testing.T) {
 		}
 
 		filename := writer.Name()
-		
+
 		// Write some data
 		_, err = writer.WriteString("test data")
 		if err != nil {
@@ -99,7 +98,7 @@ func TestCleanupBehaviorDifferences(t *testing.T) {
 
 	filename := writer.Name()
 	tempDir := filepath.Dir(filename)
-	
+
 	// Check if file exists initially
 	_, err = os.Stat(filename)
 	initialExists := err == nil
@@ -108,7 +107,7 @@ func TestCleanupBehaviorDifferences(t *testing.T) {
 	t.Logf("Temp file: %s", filename)
 	t.Logf("Temp dir: %s", tempDir)
 	t.Logf("File exists after creation: %t", initialExists)
-	
+
 	if runtime.GOOS != "windows" {
 		// On Unix, file should be unlinked immediately, so stat should fail
 		if initialExists {
@@ -126,5 +125,5 @@ func TestCleanupBehaviorDifferences(t *testing.T) {
 	}
 
 	// Clean up
-	writer.Close()
+	_ = writer.Close()
 }

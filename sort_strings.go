@@ -76,7 +76,7 @@ func Strings(i chan string, config *Config) (*StringSorter, chan string, chan er
 	s := newStringSorter(i, config)
 	s.tempWriter, err = tempfile.New(s.config.TempFilesDir)
 	if err != nil {
-		s.mergeErrChan <- err
+		s.mergeErrChan <- NewDiskError(err, "create temp file", s.config.TempFilesDir)
 		close(s.mergeErrChan)
 		close(s.mergeChunkChan)
 	}
@@ -193,21 +193,24 @@ func (s *StringSorter) saveChunks() error {
 					n := binary.PutUvarint(scratch, uint64(len(d)))
 					_, err = s.tempWriter.Write(scratch[:n])
 					if err != nil {
-						return err
+						return NewDiskError(err, "write size header", "")
 					}
 					// add data
 					_, err = s.tempWriter.WriteString(d)
 					if err != nil {
-						return err
+						return NewDiskError(err, "write string data", "")
 					}
 				}
 				_, err = s.tempWriter.Next()
 				if err != nil {
-					return err
+					return NewDiskError(err, "next chunk", "")
 				}
 			} else {
 				s.tempReader, err = s.tempWriter.Save()
-				return err
+				if err != nil {
+					return NewDiskError(err, "save temp file", "")
+				}
+				return nil
 			}
 		case <-s.saveCtx.Done():
 			// delete the temp file from disk
