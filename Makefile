@@ -7,7 +7,7 @@ ALL_SOURCES := $(shell find . -type f -name '*.go')
 .PHONY: fmt check test cover coverhtml example
 
 test:
-	go test -v ./...
+	go test -timeout=90s -v ./...
 	@echo "< ALL TESTS PASS >"
 
 example:
@@ -21,7 +21,7 @@ deps: go.mod
 	go mod download
 
 fmt:
-	gofmt -s -w -l .
+	go fmt -s -w -l .
 
 coverage.out: $(ALL_SOURCES)
 	go test -coverprofile=coverage.out ./...

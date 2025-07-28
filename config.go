@@ -17,7 +17,7 @@ func DefaultConfig() *Config {
 		NumWorkers:         2,
 		NumMergeWorkers:    2,
 		ChanBuffSize:       1,
-		SortedChanBuffSize: 10,
+		SortedChanBuffSize: 1000,
 		TempFilesDir:       "",
 	}
 }
