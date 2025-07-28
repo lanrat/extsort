@@ -267,7 +267,9 @@ func (s *GenericSorter[E]) sortChunks() error {
 							sortDone <- nil // Success
 						}
 					}()
-					sort.Sort(b) // TODO migrate to slices sortFunc?
+					// TODO in a future version: migrate to slices.SortFunc().
+					// Will require the new less func to return an int, not bool
+					sort.Sort(b)
 				}()
 
 				// Wait for either sort completion or context cancellation
