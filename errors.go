@@ -64,19 +64,15 @@ func NewDeserializationError(cause interface{}, dataSize int, context string) er
 type ComparisonError struct {
 	// Cause is the original panic or error that occurred during comparison
 	Cause interface{}
-	// TypeA is the type name of the first item being compared
-	TypeA string
-	// TypeB is the type name of the second item being compared
-	TypeB string
 	// Context provides additional information about when the comparison failed
 	Context string
 }
 
 func (e *ComparisonError) Error() string {
 	if e.Context != "" {
-		return fmt.Sprintf("comparison panic in %s (comparing %s with %s): %v", e.Context, e.TypeA, e.TypeB, e.Cause)
+		return fmt.Sprintf("comparison panic in %s: %v", e.Context, e.Cause)
 	}
-	return fmt.Sprintf("comparison panic (comparing %s with %s): %v", e.TypeA, e.TypeB, e.Cause)
+	return fmt.Sprintf("comparison panic: %v", e.Cause)
 }
 
 func (e *ComparisonError) Unwrap() error {
@@ -87,8 +83,8 @@ func (e *ComparisonError) Unwrap() error {
 }
 
 // NewComparisonError creates a ComparisonError
-func NewComparisonError(cause interface{}, typeA, typeB, context string) error {
-	return &ComparisonError{Cause: cause, TypeA: typeA, TypeB: typeB, Context: context}
+func NewComparisonError(cause interface{}, context string) error {
+	return &ComparisonError{Cause: cause, Context: context}
 }
 
 // NewDiskError creates a DiskError wrapping the underlying I/O error
@@ -98,7 +94,6 @@ func NewDiskError(err error, operation, path string) error {
 	}
 	return fmt.Errorf("disk error during %s: %w", operation, err)
 }
-
 
 // ConfigError represents an error in configuration parameters
 type ConfigError struct {

@@ -281,7 +281,7 @@ func TestMixedTypeComparison(t *testing.T) {
 				return &d
 			}
 		}
-		
+
 		// Otherwise try as val
 		var v val
 		if err := json.Unmarshal(data, &v); err == nil {

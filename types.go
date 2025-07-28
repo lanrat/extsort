@@ -2,18 +2,16 @@ package extsort
 
 import "context"
 
-// SortType defines the interface required by the extsort library to be able to sort the items
-type SortType interface {
-	ToBytes() []byte // ToBytes used for marshaling with gob
-}
-
-// FromBytes unmarshal bytes from gob to create a SortType when reading back the sorted items
-type FromBytes func([]byte) SortType
-
-// CompareLessFunc compares two SortType items and returns true if a is less than b
-type CompareLessFunc func(a, b SortType) bool
-
 // Sorter is the interface that all extsort sorters must satisfy
 type Sorter interface {
 	Sort(context.Context)
 }
+
+// FromBytesGeneric unmarshal bytes to create a E when reading back the sorted items
+type FromBytesGeneric[E any] func([]byte) E
+
+// ToBytesGeneric marshal the type E to []byte
+type ToBytesGeneric[E any] func(E) []byte
+
+// CompareLessFuncGeneric compares two E items and returns true if a is less than b
+type CompareLessFuncGeneric[E any] func(a, b E) bool

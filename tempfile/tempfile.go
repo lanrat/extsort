@@ -41,13 +41,13 @@ func New(dir string) (*FileWriter, error) {
 	if err != nil {
 		return nil, err
 	}
-	
+
 	// Try immediate unlink for automatic cleanup (works on Unix)
 	// If it fails (likely Windows), we'll do manual cleanup later
 	if err = os.Remove(w.file.Name()); err != nil {
 		w.needsCleanup = true // Manual cleanup needed
 	}
-	
+
 	w.bufWriter = bufio.NewWriterSize(w.file, fileBufferSize)
 	w.sections = make([]int64, 0, 10)
 
@@ -73,14 +73,14 @@ func (w *FileWriter) Close() error {
 	err := w.file.Close()
 	w.sections = nil
 	w.bufWriter = nil
-	
+
 	// Only attempt manual cleanup if needed (Windows case)
 	if w.needsCleanup {
 		if removeErr := os.Remove(filename); removeErr != nil && err == nil {
 			err = removeErr
 		}
 	}
-	
+
 	return err
 }
 
@@ -120,7 +120,7 @@ func (w *FileWriter) Save() (TempReader, error) {
 	if err != nil {
 		return nil, err
 	}
-	
+
 	if w.needsCleanup {
 		// Windows case: close file and reopen for reading
 		filename := w.file.Name()
@@ -180,14 +180,14 @@ func newTempReaderFromFile(file *os.File, sections []int64, needsCleanup bool) (
 func (r *fileReader) Close() error {
 	r.readers = nil
 	err := r.file.Close()
-	
+
 	// Only attempt manual cleanup if needed (Windows case)
 	if r.needsCleanup {
 		if removeErr := os.Remove(r.filename); removeErr != nil && err == nil {
 			err = removeErr
 		}
 	}
-	
+
 	return err
 }
 
