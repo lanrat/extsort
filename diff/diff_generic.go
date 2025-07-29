@@ -1,6 +1,3 @@
-// Package diff provides functionality for comparing two sorted data streams
-// and identifying differences between them. It operates efficiently on pre-sorted
-// input channels and reports items that exist in only one stream or both streams.
 package diff
 
 import (
@@ -8,45 +5,51 @@ import (
 	"fmt"
 )
 
-type stringDiffer struct {
+// differ is an internal struct that holds the state for performing diff operations
+// between two sorted channels of type T. It manages the comparison logic and
+// result reporting through callback functions.
+type differ[T any] struct {
 	ctx                context.Context
-	aChan, bChan       <-chan string
+	aChan, bChan       <-chan T
 	aErrChan, bErrChan <-chan error
-	resultFunc         StringResultFunc
+	resultFunc         ResultFunc[T]
+	compare            CompareFunc[T]
 }
 
-// Strings performs a diff operation on two sorted string channels.
-// It compares items from both channels in lexicographic order and calls resultFunc
-// for each item that exists in only one channel (differences).
+// Generic performs a diff operation on two sorted channels of any comparable type T.
+// It compares items from both channels using the provided comparison function and calls
+// resultFunc for each item that exists in only one channel (differences).
 //
 // Parameters:
 //   - ctx: Context for cancellation and timeout control
-//   - aChan, bChan: Sorted string channels to compare (MUST be pre-sorted)
-//   - aErrChan, bErrChan: Error channels corresponding to each string channel
+//   - aChan, bChan: Sorted channels to compare (MUST be pre-sorted)
+//   - aErrChan, bErrChan: Error channels corresponding to each data channel
+//   - compareFunc: Function that returns <0, 0, or >0 for ordering comparison
 //   - resultFunc: Callback function called for each difference found
 //
 // Returns statistical information about the comparison and any errors encountered.
-// The function assumes both input channels provide strings in ascending sorted order.
-// This assumption is not validated for performance reasons.
-func Strings(ctx context.Context, aChan, bChan <-chan string, aErrChan, bErrChan <-chan error, resultFunc StringResultFunc) (r Result, err error) {
-	var d stringDiffer
-	d.ctx = ctx
-	d.aChan = aChan
-	d.aErrChan = aErrChan
-	d.bChan = bChan
-	d.bErrChan = bErrChan
-	d.resultFunc = resultFunc
-
+// The function assumes both input channels provide items in sorted order according
+// to the comparison function. This assumption is not validated for performance reasons.
+func Generic[T any](ctx context.Context, aChan, bChan <-chan T, aErrChan, bErrChan <-chan error, compareFunc CompareFunc[T], resultFunc ResultFunc[T]) (r Result, err error) {
 	if ctx == nil || aChan == nil || bChan == nil || aErrChan == nil || bErrChan == nil || resultFunc == nil {
-		return Result{}, fmt.Errorf("diff.Strings() arguments must not be nil")
+		return Result{}, fmt.Errorf("arguments must not be nil")
 	}
 
+	d := differ[T]{
+		ctx:        ctx,
+		aChan:      aChan,
+		aErrChan:   aErrChan,
+		bChan:      bChan,
+		bErrChan:   bErrChan,
+		resultFunc: resultFunc,
+		compare:    compareFunc,
+	}
 	return d.diff()
 }
 
-func (d *stringDiffer) diff() (r Result, err error) {
+func (d *differ[T]) diff() (r Result, err error) {
 	// get first sets of values
-	var dataA, dataB string
+	var dataA, dataB T
 	var okA, okB bool
 
 	// read from channel A
@@ -62,7 +65,8 @@ func (d *stringDiffer) diff() (r Result, err error) {
 		return r, d.ctx.Err()
 	}
 	for okA && okB {
-		if dataB < dataA {
+		c := d.compare(dataA, dataB)
+		if c > 0 {
 			r.TotalB++
 			r.ExtraB++
 			err = d.resultFunc(NEW, dataB)
@@ -74,7 +78,7 @@ func (d *stringDiffer) diff() (r Result, err error) {
 			case <-d.ctx.Done():
 				return r, d.ctx.Err()
 			}
-		} else if dataA < dataB {
+		} else if c < 0 {
 			r.TotalA++
 			r.ExtraA++
 			err = d.resultFunc(OLD, dataA)
@@ -153,9 +157,10 @@ func (d *stringDiffer) diff() (r Result, err error) {
 	return
 }
 
-// PrintStringDiff satisfies StringResultFunc and can be used as
-// resultFunc in diff.Strings().
-func PrintStringDiff(d Delta, s string) error {
-	_, err := fmt.Printf("%s %s\n", d, s)
+// PrintDiff is a utility function that can be used as a ResultFunc to print
+// differences to stdout. It formats each difference with the Delta symbol
+// (< for OLD, > for NEW) followed by the item value.
+func PrintDiff[T any](d Delta, s T) error {
+	_, err := fmt.Printf("%s %v\n", d, s)
 	return err
 }
