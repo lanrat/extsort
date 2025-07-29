@@ -284,7 +284,7 @@ func TestLargeDataset(t *testing.T) {
 	go func() {
 		// Generate overlapping sequences with zero-padded strings for proper lexicographic sorting
 		for i := 0; i < size; i++ {
-			aChan <- fmt.Sprintf("%05d", i)  // Zero-pad to 5 digits
+			aChan <- fmt.Sprintf("%05d", i) // Zero-pad to 5 digits
 		}
 		close(aChan)
 		close(aErrChan)
@@ -293,7 +293,7 @@ func TestLargeDataset(t *testing.T) {
 	go func() {
 		// Generate overlapping sequences with offset
 		for i := size / 2; i < size+size/2; i++ {
-			bChan <- fmt.Sprintf("%05d", i)  // Zero-pad to 5 digits
+			bChan <- fmt.Sprintf("%05d", i) // Zero-pad to 5 digits
 		}
 		close(bChan)
 		close(bErrChan)

@@ -21,7 +21,7 @@ deps: go.mod
 	go mod download
 
 fmt:
-	go fmt -s -w -l .
+	go fmt ./...
 
 coverage.out: $(ALL_SOURCES)
 	go test -coverprofile=coverage.out ./...
