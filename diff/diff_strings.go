@@ -10,8 +10,8 @@ import (
 
 type stringDiffer struct {
 	ctx                context.Context
-	aChan, bChan       chan string
-	aErrChan, bErrChan chan error
+	aChan, bChan       <-chan string
+	aErrChan, bErrChan <-chan error
 	resultFunc         StringResultFunc
 }
 
@@ -28,7 +28,7 @@ type stringDiffer struct {
 // Returns statistical information about the comparison and any errors encountered.
 // The function assumes both input channels provide strings in ascending sorted order.
 // This assumption is not validated for performance reasons.
-func Strings(ctx context.Context, aChan, bChan chan string, aErrChan chan error, bErrChan chan error, resultFunc StringResultFunc) (r Result, err error) {
+func Strings(ctx context.Context, aChan, bChan <-chan string, aErrChan, bErrChan <-chan error, resultFunc StringResultFunc) (r Result, err error) {
 	var d stringDiffer
 	d.ctx = ctx
 	d.aChan = aChan
