@@ -29,4 +29,5 @@ type ToBytesGeneric[E any] func(E) []byte
 // It must implement a strict weak ordering: reflexivity, antisymmetry, and transitivity.
 // Returns true if the first argument should be ordered before the second in the final sorted output.
 // The function must be consistent and must handle any errors by panicking.
+// TODO in a future version, this function should return an int.
 type CompareLessFuncGeneric[E any] func(a, b E) bool
