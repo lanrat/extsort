@@ -10,6 +10,7 @@ type StringSorter struct {
 // lessFuncStrings provides lexicographic string comparison.
 // Returns true if string a is lexicographically less than string b.
 func lessFuncStrings(a, b string) bool {
+	// TODO can be replaced with cmp.Compare[T] when returning int type
 	return a < b
 }
 

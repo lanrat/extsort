@@ -31,6 +31,7 @@ func newOrderedSorter[T cmp.Ordered]() *OrderedSorter[T] {
 // lessFuncOrdered provides the comparison function for ordered types.
 // It uses the < operator which is available for all cmp.Ordered types.
 func lessFuncOrdered[T cmp.Ordered](a, b T) bool {
+	// TODO can be replaced with cmp.Compare[T] when returning int type
 	return a < b
 }
 
