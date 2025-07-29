@@ -1,4 +1,6 @@
-// Package diff performs diffs on sorted channels of data
+// Package diff provides functionality for comparing two sorted data streams
+// and identifying differences between them. It operates efficiently on pre-sorted
+// input channels and reports items that exist in only one stream or both streams.
 package diff
 
 import (
@@ -13,9 +15,19 @@ type stringDiffer struct {
 	resultFunc         StringResultFunc
 }
 
-// Strings takes 4 chan inputs, 2 for strings, and 2 for their corresponding error channels, and a StringResultFunc to be called for every new/old record found
-// when done, counter results and errors (if any) are returned
-// string chan input MUST be sorted, for performance reasons this is not checked!
+// Strings performs a diff operation on two sorted string channels.
+// It compares items from both channels in lexicographic order and calls resultFunc
+// for each item that exists in only one channel (differences).
+//
+// Parameters:
+//   - ctx: Context for cancellation and timeout control
+//   - aChan, bChan: Sorted string channels to compare (MUST be pre-sorted)
+//   - aErrChan, bErrChan: Error channels corresponding to each string channel
+//   - resultFunc: Callback function called for each difference found
+//
+// Returns statistical information about the comparison and any errors encountered.
+// The function assumes both input channels provide strings in ascending sorted order.
+// This assumption is not validated for performance reasons.
 func Strings(ctx context.Context, aChan, bChan chan string, aErrChan chan error, bErrChan chan error, resultFunc StringResultFunc) (r Result, err error) {
 	var d stringDiffer
 	d.ctx = ctx

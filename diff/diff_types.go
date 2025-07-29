@@ -2,18 +2,25 @@ package diff
 
 import "fmt"
 
-// Delta represents the differential value passed to ResultFunc: NEW/OLD
+// Delta represents the type of difference found when comparing two sorted streams.
+// It indicates whether an item is unique to the first stream (OLD) or second stream (NEW).
 type Delta int
 
 const (
-	// NEW is an enum for a new/added value in a diff passed to ResultFunc
+	// NEW indicates an item that exists only in the second stream (B).
+	// This represents a "new" or "added" item when comparing A to B.
 	NEW = iota // +
-	// OLD is an enum for a removed value in a diff  passed to ResultFunc
+	
+	// OLD indicates an item that exists only in the first stream (A).
+	// This represents an "old" or "removed" item when comparing A to B.
 	OLD // -
 )
 
-// StringResultFunc defines the interface for a function to
-// be called for each delta record
+// StringResultFunc is a callback function type for processing diff results.
+// It is called once for each item that appears in only one of the two streams.
+// The Delta parameter indicates which stream the item belongs to (NEW or OLD).
+// The string parameter contains the actual item value.
+// If the function returns an error, the diff operation will be terminated.
 type StringResultFunc func(Delta, string) error
 
 func (d Delta) String() string {
@@ -27,12 +34,22 @@ func (d Delta) String() string {
 	}
 }
 
-// Result stores statistics generated from diffing two streams
+// Result contains statistical information about the differences between two sorted streams.
+// It provides counts of items that are unique to each stream as well as common items.
 type Result struct {
+	// ExtraA is the count of items that exist only in stream A (OLD items)
 	ExtraA uint64
+	
+	// ExtraB is the count of items that exist only in stream B (NEW items) 
 	ExtraB uint64
+	
+	// TotalA is the total count of items processed from stream A
 	TotalA uint64
+	
+	// TotalB is the total count of items processed from stream B
 	TotalB uint64
+	
+	// Common is the count of items that exist in both streams
 	Common uint64
 }
 
