@@ -17,7 +17,10 @@ type Person struct {
 func personToBytes(p Person) []byte {
 	var buf bytes.Buffer
 	enc := gob.NewEncoder(&buf)
-	enc.Encode(p)
+	err := enc.Encode(p)
+	if err != nil {
+		panic(err)
+	}
 	return buf.Bytes()
 }
 
@@ -25,7 +28,10 @@ func personFromBytes(data []byte) Person {
 	var p Person
 	buf := bytes.NewReader(data)
 	dec := gob.NewDecoder(buf)
-	dec.Decode(&p)
+	err := dec.Decode(&p)
+	if err != nil {
+		panic(err)
+	}
 	return p
 }
 
