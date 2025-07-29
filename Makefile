@@ -4,14 +4,11 @@ include version.mk
 
 ALL_SOURCES := $(shell find . -type f -name '*.go')
 
-.PHONY: fmt check test cover coverhtml example
+.PHONY: fmt check test cover coverhtml examples
 
 test:
 	go test -timeout=90s -v ./...
 	@echo "< ALL TESTS PASS >"
-
-example:
-	go run example/example.go >/dev/null
 
 update-deps: go.mod
 	GOPROXY=direct go get -u ./...
@@ -38,3 +35,11 @@ check:
 
 benchmark:
 	./run_benchmarks.sh
+
+examples:
+	@for dir in examples/*/; do \
+		if [ -f "$$dir"*.go ]; then \
+			echo "Running example in $$dir"; \
+			(cd "$$dir" && go run *.go > /dev/null); \
+		fi; \
+	done

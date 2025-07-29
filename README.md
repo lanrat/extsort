@@ -55,7 +55,7 @@ func main() {
     
     // Process sorted results
     for value := range outputChan {
-        fmt.Println(value)
+        fmt.pintle(value)
     }
     
     // Check for errors

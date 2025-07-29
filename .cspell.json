@@ -21,8 +21,10 @@
         "lessfunc",
         "memprofile",
         "pprof",
+        "Println",
         "psilva",
         "staticcheck",
+        "strconv",
         "tempfile",
         "tempfiles",
         "timsort"
