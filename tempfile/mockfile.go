@@ -6,34 +6,43 @@ import (
 	"io"
 )
 
-// MockFileWriter allows writing to a temp file(s) that are backed by memory
+// MockFileWriter provides an in-memory implementation of the TempWriter interface.
+// It stores all data in memory using bytes.Buffer instead of writing to disk files.
+// This is useful for testing and benchmarking without filesystem I/O overhead.
 type MockFileWriter struct {
 	data     *bytes.Buffer
 	sections []int
 }
 
-// mockFileReader allows reading from a temp file(s) that are backed by memory
+// mockFileReader provides an in-memory implementation of the TempReader interface.
+// It reads data from the bytes.Buffer written by MockFileWriter, providing
+// the same sectioned access pattern as the disk-based implementation.
 type mockFileReader struct {
 	data     *bytes.Reader
 	sections []int
 	readers  []*bufio.Reader
 }
 
-// Mock returns a new TempWriter backed by memory
+// Mock creates a new in-memory TempWriter with the specified initial capacity.
+// The parameter n sets the initial capacity of the underlying buffer to reduce
+// memory reallocations during writing. Use this for testing and benchmarking
+// scenarios where disk I/O should be avoided.
 func Mock(n int) *MockFileWriter {
 	var m MockFileWriter
 	m.data = bytes.NewBuffer(make([]byte, 0, n))
 	return &m
 }
 
-// Size return the number of "files" saved
+// Size returns the total number of virtual file sections that have been created.
+// This includes the current section being written plus all completed sections.
 func (w *MockFileWriter) Size() int {
 	// we add one because we only write to the sections when we are done
 	return len(w.sections) + 1
 }
 
-// Close stops the tempfile from accepting new data,
-// works like an abort, unrecoverable
+// Close terminates the MockFileWriter and releases all memory.
+// This operation is irreversible and prevents transitioning to read mode.
+// Use Save() instead to transition from writing to reading.
 func (w *MockFileWriter) Close() error {
 	w.data.Reset()
 	w.sections = nil
@@ -41,12 +50,12 @@ func (w *MockFileWriter) Close() error {
 	return nil
 }
 
-// Write writes the byte to the temp file
+// Write appends data to the current virtual file section in memory.
 func (w *MockFileWriter) Write(p []byte) (int, error) {
 	return w.data.Write(p)
 }
 
-// WriteString writes the string to the temp file
+// WriteString appends string data to the current virtual file section in memory.
 func (w *MockFileWriter) WriteString(s string) (int, error) {
 	return w.data.WriteString(s)
 }

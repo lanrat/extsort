@@ -1,6 +1,8 @@
 {
     "version": "0.2",
-    "ignorePaths": [],
+    "ignorePaths": [
+        "bench_results/*"
+    ],
     "dictionaryDefinitions": [],
     "dictionaries": [],
     "words": [

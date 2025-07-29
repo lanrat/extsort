@@ -1,7 +1,13 @@
-// Package tempfile implements a virtual temp files that can be written to (in series)
-// and then read back (series/parallel) and then removed from the filesystem when done
-// if multiple "tempfiles" are needed on the application layer, they are mapped to
-// sections of the same real file on the filesystem
+// Package tempfile provides an abstraction for creating virtual temporary files
+// that are mapped to sections of a single physical file on disk. This design minimizes
+// file descriptor usage while supporting efficient sequential writes and concurrent reads.
+//
+// The package supports two main workflows:
+//  1. Write data sequentially to multiple virtual files using FileWriter
+//  2. Read data back from any virtual file section using TempReader
+//
+// The implementation handles cross-platform differences in file cleanup behavior,
+// with automatic cleanup on Unix systems and explicit cleanup on Windows.
 package tempfile
 
 import (
@@ -17,7 +23,10 @@ const fileBufferSize = 1 << 16 // 64k
 // filename prefix for files put in temp directory
 var mergeFilenamePrefix = fmt.Sprintf("extsort_%d_", os.Getpid())
 
-// FileWriter allows for creating virtual temp files for reading/writing
+// FileWriter provides sequential writing to virtual temporary file sections.
+// Each "virtual file" corresponds to a section of the underlying physical file,
+// allowing multiple logical files to share a single file descriptor and reduce
+// system resource usage during external sorting operations.
 type FileWriter struct {
 	file         *os.File
 	bufWriter    *bufio.Writer
@@ -33,7 +42,10 @@ type fileReader struct {
 	filename     string // filename for cleanup
 }
 
-// New creates a new tempfile in dir, if dir is empty the OS default is used
+// New creates a new FileWriter for virtual temporary files in the specified directory.
+// If dir is empty, the OS default temporary directory is used (e.g., /tmp on Unix).
+// The function attempts automatic cleanup on Unix systems by unlinking the file immediately,
+// while Windows requires explicit cleanup when the FileWriter is closed.
 func New(dir string) (*FileWriter, error) {
 	var w FileWriter
 	var err error
@@ -54,20 +66,23 @@ func New(dir string) (*FileWriter, error) {
 	return &w, nil
 }
 
-// Size returns the number of virtual files created
+// Size returns the total number of virtual file sections created.
+// This includes the current section being written plus all completed sections.
 func (w *FileWriter) Size() int {
 	// we add one because we only write to the sections when we are done
 	return len(w.sections) + 1
 }
 
-// Name returns the full path of the underlying file on the OS
+// Name returns the full filesystem path of the underlying physical temporary file.
+// This is primarily useful for debugging and logging purposes.
 func (w *FileWriter) Name() string {
 	return w.file.Name()
 }
 
-// Close stops the tempfile from accepting new data,
-// closes the file, and removes the temp file from disk
-// works like an abort, unrecoverable
+// Close terminates the FileWriter, flushes any buffered data, closes the underlying file,
+// and removes it from disk if manual cleanup is required. This operation is irreversible
+// and should only be called when abandoning the temporary file (e.g., on error).
+// Use Save() instead to transition from writing to reading.
 func (w *FileWriter) Close() error {
 	filename := w.file.Name()
 	err := w.file.Close()
@@ -84,17 +99,21 @@ func (w *FileWriter) Close() error {
 	return err
 }
 
-// Write writes a byte to the current file section
+// Write appends data to the current virtual file section.
+// Data is buffered for efficiency and will be flushed when Next() or Save() is called.
 func (w *FileWriter) Write(p []byte) (int, error) {
 	return w.bufWriter.Write(p)
 }
 
-// WriteString writes s to the current file section
+// WriteString appends a string to the current virtual file section.
+// This is more efficient than Write() for string data as it avoids byte slice conversion.
 func (w *FileWriter) WriteString(s string) (int, error) {
 	return w.bufWriter.WriteString(s)
 }
 
-// Next stops writing the the current section/file and prepares the tempWriter for the next one
+// Next finalizes the current virtual file section and prepares for writing the next section.
+// It flushes buffered data and records the section boundary for later reading.
+// Returns the file offset where the next section will begin.
 func (w *FileWriter) Next() (int64, error) {
 	// save offsets
 	err := w.bufWriter.Flush()
@@ -110,7 +129,9 @@ func (w *FileWriter) Next() (int64, error) {
 	return pos, nil
 }
 
-// Save stops writing new data/sections to the temp file and returns a reader for reading the data/sections back
+// Save finalizes all virtual file sections and returns a TempReader for accessing the data.
+// After calling Save(), the FileWriter can no longer be used for writing.
+// The returned TempReader allows concurrent access to any virtual file section.
 func (w *FileWriter) Save() (TempReader, error) {
 	_, err := w.Next()
 	if err != nil {

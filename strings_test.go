@@ -23,17 +23,37 @@ func sortStringForTest(inputData []string) error {
 	}()
 	config := extsort.DefaultConfig()
 	config.ChunkSize = len(inputData)/20 + 100
+
+	// Create cancelable context for proper cleanup
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	sort, outChan, errChan := extsort.Strings(inputChan, config)
-	sort.Sort(context.Background())
+	sort.Sort(ctx)
+
 	i := 0
-	for rec := range outChan {
-		inputData[i] = rec
-		i++
+	for {
+		select {
+		case rec, ok := <-outChan:
+			if !ok {
+				if err := <-errChan; err != nil {
+					return err
+				}
+				return nil
+			}
+			inputData[i] = rec
+			i++
+		case err := <-errChan:
+			if err != nil {
+				return err
+			}
+			for rec := range outChan {
+				inputData[i] = rec
+				i++
+			}
+			return nil
+		}
 	}
-	if err := <-errChan; err != nil {
-		return err
-	}
-	return nil
 }
 
 func makeTestStringArray(size int) []string {

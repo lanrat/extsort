@@ -1,7 +1,9 @@
-// Package queue provides a generic priority queue implementation based on the internal heap
+// Package queue provides a generic priority queue implementation optimized for external sorting.
+// It uses Go's container/heap package internally to maintain heap properties efficiently.
+// The priority queue supports any type E with a user-provided comparison function.
 package queue
 
-// Priority queue based on
+// Implementation is based on the Go standard library example:
 // https://golang.org/pkg/container/heap/#example__priorityQueue
 
 import (
@@ -22,12 +24,19 @@ type innerPriorityQueue[E any] struct {
 	lessFunc func(E, E) bool
 }
 
-// PriorityQueue implemented using a heap
+// PriorityQueue is a generic priority queue that maintains elements in sorted order
+// according to a user-provided comparison function. It provides efficient O(log n)
+// insertion and removal of the minimum/maximum element. This implementation is
+// specifically optimized for the external sorting use case where elements need
+// to be efficiently merged from multiple sorted streams.
 type PriorityQueue[E any] struct {
 	ipq innerPriorityQueue[E]
 }
 
-// NewPriorityQueue creates a new heap based PriorityQueue using cmpFunc as the comparison function
+// NewPriorityQueue creates a new priority queue with the given comparison function.
+// The cmpFunc should return true if the first argument should have higher priority
+// (appear earlier) than the second argument. For ascending order, use a < b.
+// The queue starts empty and elements can be added with Push().
 func NewPriorityQueue[E any](cmpFunc func(E, E) bool) *PriorityQueue[E] {
 	var pq PriorityQueue[E]
 	pq.ipq.items = make([]*(item[E]), 0)
@@ -36,12 +45,15 @@ func NewPriorityQueue[E any](cmpFunc func(E, E) bool) *PriorityQueue[E] {
 	return &pq
 }
 
-// Len returns the number of items in the queue
+// Len returns the current number of elements in the priority queue.
+// This operation is O(1).
 func (pq *PriorityQueue[E]) Len() int {
 	return pq.ipq.Len()
 }
 
-// Push adds x to the queue
+// Push adds a new element to the priority queue, maintaining heap properties.
+// The element will be positioned according to the comparison function provided
+// during queue creation. This operation is O(log n).
 func (pq *PriorityQueue[E]) Push(x E) {
 	var i item[E]
 	i.value = x
@@ -49,23 +61,32 @@ func (pq *PriorityQueue[E]) Push(x E) {
 	heap.Fix(&pq.ipq, i.index)
 }
 
-// Pop removes and returns the next item in the queue
+// Pop removes and returns the highest priority element from the queue.
+// The returned element is the one that would be returned by Peek().
+// This operation is O(log n). Panics if the queue is empty.
 func (pq *PriorityQueue[E]) Pop() E {
 	item := heap.Pop(&pq.ipq).(*item[E])
 	return item.value
 }
 
-// Peek returns the next item in the queue without removing it
+// Peek returns the highest priority element without removing it from the queue.
+// This allows inspection of the next element that would be returned by Pop().
+// This operation is O(1). Panics if the queue is empty.
 func (pq *PriorityQueue[E]) Peek() E {
 	return pq.ipq.items[0].value
 }
 
-// PeekUpdate reorders the backing heap with the new values
+// PeekUpdate must be called after modifying the value returned by Peek() in-place.
+// This re-establishes the heap property when the priority of the top element changes.
+// This is more efficient than Pop() followed by Push() when updating the top element.
+// This operation is O(log n).
 func (pq *PriorityQueue[E]) PeekUpdate() {
 	heap.Fix(&pq.ipq, 0)
 }
 
-// Print prints the current ordered queue
+// Print outputs the current contents of the priority queue to stdout.
+// Note that elements are printed in heap order, not priority order.
+// This method is primarily intended for debugging purposes.
 func (pq *PriorityQueue[E]) Print() {
 	fmt.Print("[")
 	for i := range pq.ipq.items {

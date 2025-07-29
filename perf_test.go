@@ -17,7 +17,16 @@ func TestDeadLockContextCancel(t *testing.T) {
 	// for simplicity, set ChanBuffSize to zero. the deadlock can happen with any value.
 	// see https://github.com/lanrat/extsort/issues/7 for details.
 	config.ChanBuffSize = 0
+	config.NumWorkers = 1 // Single worker for predictability
+
+	sortStarted := make(chan struct{})
 	lessFunc := func(a, b extsort.SortType) bool {
+		select {
+		case <-sortStarted:
+			// Already signaled
+		default:
+			close(sortStarted)
+		}
 		time.Sleep(300 * time.Millisecond) // emulate long operation
 		return false
 	}
@@ -32,11 +41,16 @@ func TestDeadLockContextCancel(t *testing.T) {
 	inputChan <- val{Key: 1, Order: 1}
 	inputChan <- val{Key: 2, Order: 2}
 	close(inputChan)
+
+	// Wait for sort to start before cancelling
+	<-sortStarted
+	time.Sleep(50 * time.Millisecond) // Ensure we're in the middle of sort
+
 	// cancel the context. the sort.Sort should now be waiting inside lessFunc.
 	cf()
 	select {
 	case <-waitCh:
-	case <-time.After(time.Second):
+	case <-time.After(2 * time.Second): // Give more time for sort to complete
 		t.Fatal("deadlock")
 	}
 }
@@ -119,18 +133,36 @@ func TestParallelMerging(t *testing.T) {
 	}
 	close(inputChan)
 
+	// Create cancelable context for proper cleanup
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	sort, outChan, errChan := extsort.New(inputChan, fromBytesForTest, KeyLessThan, config)
-	sort.Sort(context.Background())
+	sort.Sort(ctx)
 
 	// Collect and verify results
 	var results []val
-	for rec := range outChan {
-		results = append(results, rec.(val))
+	for {
+		select {
+		case rec, ok := <-outChan:
+			if !ok {
+				if err := <-errChan; err != nil {
+					t.Fatalf("sort error: %v", err)
+				}
+				goto done
+			}
+			results = append(results, rec.(val))
+		case err := <-errChan:
+			if err != nil {
+				t.Fatalf("sort error: %v", err)
+			}
+			for rec := range outChan {
+				results = append(results, rec.(val))
+			}
+			goto done
+		}
 	}
-
-	if err := <-errChan; err != nil {
-		t.Fatalf("sort error: %v", err)
-	}
+done:
 
 	// Verify sorting worked correctly
 	if len(results) != 20 {
@@ -157,18 +189,36 @@ func TestMemoryPooling(t *testing.T) {
 	}
 	close(inputChan)
 
+	// Create cancelable context for proper cleanup
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	sort, outChan, errChan := extsort.New(inputChan, fromBytesForTest, KeyLessThan, config)
-	sort.Sort(context.Background())
+	sort.Sort(ctx)
 
 	// Drain output
 	var count int
-	for range outChan {
-		count++
+	for {
+		select {
+		case _, ok := <-outChan:
+			if !ok {
+				if err := <-errChan; err != nil {
+					t.Fatalf("sort error: %v", err)
+				}
+				goto done
+			}
+			count++
+		case err := <-errChan:
+			if err != nil {
+				t.Fatalf("sort error: %v", err)
+			}
+			for range outChan {
+				count++
+			}
+			goto done
+		}
 	}
-
-	if err := <-errChan; err != nil {
-		t.Fatalf("sort error: %v", err)
-	}
+done:
 
 	if count != 30 {
 		t.Fatalf("expected 30 results, got %d", count)

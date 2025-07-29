@@ -13,18 +13,36 @@ func TestEmptyInput(t *testing.T) {
 	inputChan := make(chan extsort.SortType)
 	close(inputChan) // Close immediately - empty input
 
+	// Create cancelable context for proper cleanup
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	sort, outChan, errChan := extsort.New(inputChan, fromBytesForTest, KeyLessThan, nil)
-	sort.Sort(context.Background())
+	sort.Sort(ctx)
 
 	// Should get no output
 	var count int
-	for range outChan {
-		count++
+	for {
+		select {
+		case _, ok := <-outChan:
+			if !ok {
+				if err := <-errChan; err != nil {
+					t.Fatalf("unexpected error with empty input: %v", err)
+				}
+				goto done2
+			}
+			count++
+		case err := <-errChan:
+			if err != nil {
+				t.Fatalf("unexpected error with empty input: %v", err)
+			}
+			for range outChan {
+				count++
+			}
+			goto done2
+		}
 	}
-
-	if err := <-errChan; err != nil {
-		t.Fatalf("unexpected error with empty input: %v", err)
-	}
+done2:
 
 	if count != 0 {
 		t.Fatalf("expected 0 results, got %d", count)
@@ -37,17 +55,35 @@ func TestSingleElement(t *testing.T) {
 	inputChan <- val{Key: 42, Order: 1}
 	close(inputChan)
 
+	// Create cancelable context for proper cleanup
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	sort, outChan, errChan := extsort.New(inputChan, fromBytesForTest, KeyLessThan, nil)
-	sort.Sort(context.Background())
+	sort.Sort(ctx)
 
 	var results []val
-	for rec := range outChan {
-		results = append(results, rec.(val))
+	for {
+		select {
+		case rec, ok := <-outChan:
+			if !ok {
+				if err := <-errChan; err != nil {
+					t.Fatalf("unexpected error with single element: %v", err)
+				}
+				goto done3
+			}
+			results = append(results, rec.(val))
+		case err := <-errChan:
+			if err != nil {
+				t.Fatalf("unexpected error with single element: %v", err)
+			}
+			for rec := range outChan {
+				results = append(results, rec.(val))
+			}
+			goto done3
+		}
 	}
-
-	if err := <-errChan; err != nil {
-		t.Fatalf("unexpected error with single element: %v", err)
-	}
+done3:
 
 	if len(results) != 1 {
 		t.Fatalf("expected 1 result, got %d", len(results))
@@ -68,17 +104,35 @@ func TestAllIdenticalElements(t *testing.T) {
 	}
 	close(inputChan)
 
+	// Create cancelable context for proper cleanup
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	sort, outChan, errChan := extsort.New(inputChan, fromBytesForTest, KeyLessThan, nil)
-	sort.Sort(context.Background())
+	sort.Sort(ctx)
 
 	var results []val
-	for rec := range outChan {
-		results = append(results, rec.(val))
+	for {
+		select {
+		case rec, ok := <-outChan:
+			if !ok {
+				if err := <-errChan; err != nil {
+					t.Fatalf("unexpected error with identical elements: %v", err)
+				}
+				goto done1
+			}
+			results = append(results, rec.(val))
+		case err := <-errChan:
+			if err != nil {
+				t.Fatalf("unexpected error with identical elements: %v", err)
+			}
+			for rec := range outChan {
+				results = append(results, rec.(val))
+			}
+			goto done1
+		}
 	}
-
-	if err := <-errChan; err != nil {
-		t.Fatalf("unexpected error with identical elements: %v", err)
-	}
+done1:
 
 	if len(results) != 50 {
 		t.Fatalf("expected 50 results, got %d", len(results))

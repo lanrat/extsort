@@ -24,16 +24,16 @@ func PersonToBytes(p Person) []byte {
 	nameBytes := []byte(p.Name)
 	ageBytes := make([]byte, 4)
 	binary.LittleEndian.PutUint32(ageBytes, uint32(p.Age))
-	
+
 	// Format: [nameLen][name][age]
 	result := make([]byte, 0, 4+len(nameBytes)+4)
 	lenBytes := make([]byte, 4)
 	binary.LittleEndian.PutUint32(lenBytes, uint32(len(nameBytes)))
-	
+
 	result = append(result, lenBytes...)
 	result = append(result, nameBytes...)
 	result = append(result, ageBytes...)
-	
+
 	return result
 }
 
@@ -42,15 +42,15 @@ func PersonFromBytes(data []byte) Person {
 	if len(data) < 8 {
 		return Person{}
 	}
-	
+
 	nameLen := binary.LittleEndian.Uint32(data[0:4])
 	if len(data) < int(4+nameLen+4) {
 		return Person{}
 	}
-	
+
 	name := string(data[4 : 4+nameLen])
 	age := int(binary.LittleEndian.Uint32(data[4+nameLen : 4+nameLen+4]))
-	
+
 	return Person{Name: name, Age: age}
 }
 
@@ -71,28 +71,46 @@ func TestGenericPersonSort(t *testing.T) {
 		{Name: "Diana", Age: 25},
 		{Name: "Eve", Age: 28},
 	}
-	
+
 	inputChan := make(chan Person, len(people))
 	for _, p := range people {
 		inputChan <- p
 	}
 	close(inputChan)
-	
+
 	config := extsort.DefaultConfig()
 	config.ChunkSize = 3
-	
+
+	// Create cancelable context for proper cleanup
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	sorter, outChan, errChan := extsort.Generic(inputChan, PersonFromBytes, PersonToBytes, PersonLessFunc, config)
-	sorter.Sort(context.Background())
-	
+	sorter.Sort(ctx)
+
 	var result []Person
-	for person := range outChan {
-		result = append(result, person)
+	for {
+		select {
+		case person, ok := <-outChan:
+			if !ok {
+				if err := <-errChan; err != nil {
+					t.Fatalf("sort error: %v", err)
+				}
+				goto done1
+			}
+			result = append(result, person)
+		case err := <-errChan:
+			if err != nil {
+				t.Fatalf("sort error: %v", err)
+			}
+			for person := range outChan {
+				result = append(result, person)
+			}
+			goto done1
+		}
 	}
-	
-	if err := <-errChan; err != nil {
-		t.Fatalf("sort error: %v", err)
-	}
-	
+done1:
+
 	// Verify sorting: should be sorted by age first, then by name
 	expected := []Person{
 		{Name: "Bob", Age: 25},
@@ -101,7 +119,7 @@ func TestGenericPersonSort(t *testing.T) {
 		{Name: "Alice", Age: 30},
 		{Name: "Charlie", Age: 35},
 	}
-	
+
 	if !reflect.DeepEqual(result, expected) {
 		t.Errorf("Expected %v, got %v", expected, result)
 	}
@@ -110,16 +128,20 @@ func TestGenericPersonSort(t *testing.T) {
 // Test integer sorting with generics
 func TestGenericIntSort(t *testing.T) {
 	data := []int{64, 34, 25, 12, 22, 11, 90}
-	
+
 	inputChan := make(chan int, len(data))
 	for _, v := range data {
 		inputChan <- v
 	}
 	close(inputChan)
-	
+
 	config := extsort.DefaultConfig()
 	config.ChunkSize = 3
-	
+
+	// Create cancelable context for proper cleanup
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	sorter, outChan, errChan := extsort.Generic(
 		inputChan,
 		func(b []byte) int {
@@ -136,18 +158,32 @@ func TestGenericIntSort(t *testing.T) {
 		func(a, b int) bool { return a < b },
 		config,
 	)
-	
-	sorter.Sort(context.Background())
-	
+
+	sorter.Sort(ctx)
+
 	var result []int
-	for val := range outChan {
-		result = append(result, val)
+	for {
+		select {
+		case val, ok := <-outChan:
+			if !ok {
+				if err := <-errChan; err != nil {
+					t.Fatalf("sort error: %v", err)
+				}
+				goto done2
+			}
+			result = append(result, val)
+		case err := <-errChan:
+			if err != nil {
+				t.Fatalf("sort error: %v", err)
+			}
+			for val := range outChan {
+				result = append(result, val)
+			}
+			goto done2
+		}
 	}
-	
-	if err := <-errChan; err != nil {
-		t.Fatalf("sort error: %v", err)
-	}
-	
+done2:
+
 	expected := []int{11, 12, 22, 25, 34, 64, 90}
 	if !reflect.DeepEqual(result, expected) {
 		t.Errorf("Expected %v, got %v", expected, result)
@@ -157,16 +193,20 @@ func TestGenericIntSort(t *testing.T) {
 // Test float64 sorting with generics
 func TestGenericFloat64Sort(t *testing.T) {
 	data := []float64{3.14, 2.71, 1.41, 1.73, 0.57}
-	
+
 	inputChan := make(chan float64, len(data))
 	for _, v := range data {
 		inputChan <- v
 	}
 	close(inputChan)
-	
+
 	config := extsort.DefaultConfig()
 	config.ChunkSize = 2
-	
+
+	// Create cancelable context for proper cleanup
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	sorter, outChan, errChan := extsort.Generic(
 		inputChan,
 		func(b []byte) float64 {
@@ -185,18 +225,32 @@ func TestGenericFloat64Sort(t *testing.T) {
 		func(a, b float64) bool { return a < b },
 		config,
 	)
-	
-	sorter.Sort(context.Background())
-	
+
+	sorter.Sort(ctx)
+
 	var result []float64
-	for val := range outChan {
-		result = append(result, val)
+	for {
+		select {
+		case val, ok := <-outChan:
+			if !ok {
+				if err := <-errChan; err != nil {
+					t.Fatalf("sort error: %v", err)
+				}
+				goto done3
+			}
+			result = append(result, val)
+		case err := <-errChan:
+			if err != nil {
+				t.Fatalf("sort error: %v", err)
+			}
+			for val := range outChan {
+				result = append(result, val)
+			}
+			goto done3
+		}
 	}
-	
-	if err := <-errChan; err != nil {
-		t.Fatalf("sort error: %v", err)
-	}
-	
+done3:
+
 	expected := []float64{0.57, 1.41, 1.73, 2.71, 3.14}
 	if !reflect.DeepEqual(result, expected) {
 		t.Errorf("Expected %v, got %v", expected, result)
@@ -206,16 +260,20 @@ func TestGenericFloat64Sort(t *testing.T) {
 // Test string sorting with generics (alternative to strings_test.go)
 func TestGenericStringSort(t *testing.T) {
 	data := []string{"banana", "apple", "cherry", "date", "elderberry"}
-	
+
 	inputChan := make(chan string, len(data))
 	for _, v := range data {
 		inputChan <- v
 	}
 	close(inputChan)
-	
+
 	config := extsort.DefaultConfig()
 	config.ChunkSize = 2
-	
+
+	// Create cancelable context for proper cleanup
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	sorter, outChan, errChan := extsort.Generic(
 		inputChan,
 		func(b []byte) string { return string(b) },
@@ -223,18 +281,32 @@ func TestGenericStringSort(t *testing.T) {
 		func(a, b string) bool { return a < b },
 		config,
 	)
-	
-	sorter.Sort(context.Background())
-	
+
+	sorter.Sort(ctx)
+
 	var result []string
-	for val := range outChan {
-		result = append(result, val)
+	for {
+		select {
+		case val, ok := <-outChan:
+			if !ok {
+				if err := <-errChan; err != nil {
+					t.Fatalf("sort error: %v", err)
+				}
+				goto done4
+			}
+			result = append(result, val)
+		case err := <-errChan:
+			if err != nil {
+				t.Fatalf("sort error: %v", err)
+			}
+			for val := range outChan {
+				result = append(result, val)
+			}
+			goto done4
+		}
 	}
-	
-	if err := <-errChan; err != nil {
-		t.Fatalf("sort error: %v", err)
-	}
-	
+done4:
+
 	expected := []string{"apple", "banana", "cherry", "date", "elderberry"}
 	if !reflect.DeepEqual(result, expected) {
 		t.Errorf("Expected %v, got %v", expected, result)
@@ -244,16 +316,20 @@ func TestGenericStringSort(t *testing.T) {
 // Test mock version with generics
 func TestGenericMockSort(t *testing.T) {
 	data := []int{5, 2, 8, 1, 9}
-	
+
 	inputChan := make(chan int, len(data))
 	for _, v := range data {
 		inputChan <- v
 	}
 	close(inputChan)
-	
+
 	config := extsort.DefaultConfig()
 	config.ChunkSize = 2
-	
+
+	// Create cancelable context for proper cleanup
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	sorter, outChan, errChan := extsort.MockGeneric(
 		inputChan,
 		func(b []byte) int {
@@ -271,18 +347,32 @@ func TestGenericMockSort(t *testing.T) {
 		config,
 		1024, // mock buffer size
 	)
-	
-	sorter.Sort(context.Background())
-	
+
+	sorter.Sort(ctx)
+
 	var result []int
-	for val := range outChan {
-		result = append(result, val)
+	for {
+		select {
+		case val, ok := <-outChan:
+			if !ok {
+				if err := <-errChan; err != nil {
+					t.Fatalf("sort error: %v", err)
+				}
+				goto done5
+			}
+			result = append(result, val)
+		case err := <-errChan:
+			if err != nil {
+				t.Fatalf("sort error: %v", err)
+			}
+			for val := range outChan {
+				result = append(result, val)
+			}
+			goto done5
+		}
 	}
-	
-	if err := <-errChan; err != nil {
-		t.Fatalf("sort error: %v", err)
-	}
-	
+done5:
+
 	expected := []int{1, 2, 5, 8, 9}
 	if !reflect.DeepEqual(result, expected) {
 		t.Errorf("Expected %v, got %v", expected, result)
@@ -296,16 +386,20 @@ func TestGenericLargeDataset(t *testing.T) {
 	for i := 0; i < size; i++ {
 		data[i] = rand.Intn(size)
 	}
-	
+
 	inputChan := make(chan int, size)
 	for _, v := range data {
 		inputChan <- v
 	}
 	close(inputChan)
-	
+
 	config := extsort.DefaultConfig()
 	config.ChunkSize = 1000
-	
+
+	// Create cancelable context for proper cleanup
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	sorter, outChan, errChan := extsort.Generic(
 		inputChan,
 		func(b []byte) int {
@@ -322,22 +416,36 @@ func TestGenericLargeDataset(t *testing.T) {
 		func(a, b int) bool { return a < b },
 		config,
 	)
-	
-	sorter.Sort(context.Background())
-	
+
+	sorter.Sort(ctx)
+
 	var result []int
-	for val := range outChan {
-		result = append(result, val)
+	for {
+		select {
+		case val, ok := <-outChan:
+			if !ok {
+				if err := <-errChan; err != nil {
+					t.Fatalf("sort error: %v", err)
+				}
+				goto done6
+			}
+			result = append(result, val)
+		case err := <-errChan:
+			if err != nil {
+				t.Fatalf("sort error: %v", err)
+			}
+			for val := range outChan {
+				result = append(result, val)
+			}
+			goto done6
+		}
 	}
-	
-	if err := <-errChan; err != nil {
-		t.Fatalf("sort error: %v", err)
-	}
-	
+done6:
+
 	if len(result) != size {
 		t.Errorf("Expected %d elements, got %d", size, len(result))
 	}
-	
+
 	// Verify it's sorted
 	for i := range result[1:] {
 		idx := i + 1
@@ -353,9 +461,9 @@ func TestGenericSorterInterface(t *testing.T) {
 	inputChan := make(chan int, 1)
 	inputChan <- 42
 	close(inputChan)
-	
+
 	config := extsort.DefaultConfig()
-	
+
 	sorter, _, _ := extsort.Generic(
 		inputChan,
 		func(b []byte) int { return 0 },
@@ -363,7 +471,7 @@ func TestGenericSorterInterface(t *testing.T) {
 		func(a, b int) bool { return a < b },
 		config,
 	)
-	
+
 	// Verify that GenericSorter implements the Sorter interface
 	onlySortersAllowed(sorter)
 }
@@ -372,9 +480,13 @@ func TestGenericSorterInterface(t *testing.T) {
 func TestGenericEmptyInput(t *testing.T) {
 	inputChan := make(chan int)
 	close(inputChan)
-	
+
 	config := extsort.DefaultConfig()
-	
+
+	// Create cancelable context for proper cleanup
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	sorter, outChan, errChan := extsort.Generic(
 		inputChan,
 		func(b []byte) int { return 0 },
@@ -382,18 +494,32 @@ func TestGenericEmptyInput(t *testing.T) {
 		func(a, b int) bool { return a < b },
 		config,
 	)
-	
-	sorter.Sort(context.Background())
-	
+
+	sorter.Sort(ctx)
+
 	var result []int
-	for val := range outChan {
-		result = append(result, val)
+	for {
+		select {
+		case val, ok := <-outChan:
+			if !ok {
+				if err := <-errChan; err != nil {
+					t.Fatalf("sort error: %v", err)
+				}
+				goto done7
+			}
+			result = append(result, val)
+		case err := <-errChan:
+			if err != nil {
+				t.Fatalf("sort error: %v", err)
+			}
+			for val := range outChan {
+				result = append(result, val)
+			}
+			goto done7
+		}
 	}
-	
-	if err := <-errChan; err != nil {
-		t.Fatalf("sort error: %v", err)
-	}
-	
+done7:
+
 	if len(result) != 0 {
 		t.Errorf("Expected empty result, got %v", result)
 	}
@@ -402,23 +528,27 @@ func TestGenericEmptyInput(t *testing.T) {
 // Benchmark generic sorting performance
 func BenchmarkGenericIntSort(b *testing.B) {
 	size := 100000
-	
+
 	for i := 0; i < b.N; i++ {
 		b.StopTimer()
 		data := make([]int, size)
 		for j := range data {
 			data[j] = rand.Intn(size)
 		}
-		
+
 		inputChan := make(chan int, size)
 		for _, v := range data {
 			inputChan <- v
 		}
 		close(inputChan)
-		
+
 		config := extsort.DefaultConfig()
 		config.ChunkSize = 10000
-		
+
+		// Create cancelable context for proper cleanup
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
 		sorter, outChan, errChan := extsort.Generic(
 			inputChan,
 			func(b []byte) int {
@@ -432,18 +562,31 @@ func BenchmarkGenericIntSort(b *testing.B) {
 			func(a, b int) bool { return a < b },
 			config,
 		)
-		
+
 		b.StartTimer()
-		sorter.Sort(context.Background())
-		
+		sorter.Sort(ctx)
+
 		count := 0
-		for range outChan {
-			count++
+		for {
+			select {
+			case _, ok := <-outChan:
+				if !ok {
+					if err := <-errChan; err != nil {
+						b.Fatalf("sort error: %v", err)
+					}
+					goto done
+				}
+				count++
+			case err := <-errChan:
+				if err != nil {
+					b.Fatalf("sort error: %v", err)
+				}
+				for range outChan {
+					count++
+				}
+				goto done
+			}
 		}
-		
-		if err := <-errChan; err != nil {
-			b.Fatalf("sort error: %v", err)
-		}
+	done:
 	}
 }
-

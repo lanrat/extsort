@@ -35,3 +35,6 @@ coverhtml: coverage.out
 check:
 	golangci-lint run ./... || true
 	staticcheck -checks all ./...
+
+benchmark:
+	./run_benchmarks.sh

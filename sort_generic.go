@@ -71,7 +71,11 @@ type memoryPools struct {
 	scratchPool   sync.Pool // scratch buffers for binary encoding
 }
 
-// GenericSorter stores an input chan and feeds Sort to return a sorted chan
+// GenericSorter implements external sorting for any type E using a divide-and-conquer approach.
+// It reads input from a channel, splits data into chunks that fit in memory, sorts each chunk,
+// saves them to temporary files, then merges all chunks back into a sorted output stream.
+// The sorter uses configurable parallelism for both sorting and merging phases,
+// and employs memory pools to reduce garbage collection pressure during operation.
 type GenericSorter[E any] struct {
 	config         Config
 	buildSortCtx   context.Context
@@ -79,7 +83,7 @@ type GenericSorter[E any] struct {
 	mergeErrChan   chan error
 	tempWriter     tempfile.TempWriter
 	tempReader     tempfile.TempReader
-	input          chan E
+	input          <-chan E
 	chunkChan      chan *genericChunk[E]
 	saveChunkChan  chan *genericChunk[E]
 	mergeChunkChan chan E
@@ -89,9 +93,10 @@ type GenericSorter[E any] struct {
 	pools          *memoryPools
 }
 
-// newSorter creates a new Sorter instance with the given configuration.
-// This is the internal constructor used by New() and NewMock().
-func newSorter[E any](input chan E, fromBytes FromBytesGeneric[E], toBytes ToBytesGeneric[E], lessFunc CompareLessFuncGeneric[E], config *Config) *GenericSorter[E] {
+// newSorter creates a new GenericSorter instance with the given configuration.
+// This internal constructor initializes all channels, applies configuration defaults,
+// and sets up memory pools for efficient resource reuse during sorting operations.
+func newSorter[E any](input <-chan E, fromBytes FromBytesGeneric[E], toBytes ToBytesGeneric[E], lessFunc CompareLessFuncGeneric[E], config *Config) *GenericSorter[E] {
 	s := new(GenericSorter[E])
 	s.input = input
 	s.lessFunc = lessFunc
@@ -106,7 +111,9 @@ func newSorter[E any](input chan E, fromBytes FromBytesGeneric[E], toBytes ToByt
 	return s
 }
 
-// initMemoryPools initializes sync.Pool instances for memory reuse
+// initMemoryPools initializes sync.Pool instances for efficient memory reuse during sorting.
+// Creates pools for chunks, slices, byte slices, and scratch buffers to reduce GC pressure
+// and improve performance during high-frequency allocation/deallocation cycles.
 func (s *GenericSorter[E]) initMemoryPools() *memoryPools {
 	pools := &memoryPools{}
 
@@ -146,13 +153,26 @@ func (s *GenericSorter[E]) initMemoryPools() *memoryPools {
 	return pools
 }
 
-// Generic returns a new Sorter instance that can be used to sort the input chan
-// fromBytes is needed to unmarshal E from []byte on disk
-// lessfunc is the comparator used for E
-// config can be nil to use the defaults, or only set the non-default values desired
-// if errors or interrupted, may leave temp files behind in config.TempFilesDir
-// the returned channels contain the data returned from calling Sort()
-func Generic[E any](input chan E, fromBytes FromBytesGeneric[E], toBytes ToBytesGeneric[E], lessFunc CompareLessFuncGeneric[E], config *Config) (*GenericSorter[E], chan E, chan error) {
+// Generic creates a new external sorter for any type E and returns the sorter instance,
+// output channel with sorted results, and error channel.
+//
+// Parameters:
+//   - input: Channel providing the data to be sorted
+//   - fromBytes: Function to deserialize E from bytes when reading from disk
+//   - toBytes: Function to serialize E to bytes when writing to disk
+//   - lessFunc: Comparison function that returns true if first argument is less than second
+//   - config: Configuration options (nil uses defaults)
+//
+// The sorting process:
+//  1. Reads data from input channel into memory chunks
+//  2. Sorts each chunk in parallel using the provided lessFunc
+//  3. Saves sorted chunks to temporary files using toBytes serialization
+//  4. Merges all chunks back into sorted order using fromBytes deserialization
+//
+// Call Sort() on the returned sorter to begin the sorting process.
+// Results are delivered via the output channel, errors via the error channel.
+// On error or interruption, temporary files may remain in config.TempFilesDir.
+func Generic[E any](input <-chan E, fromBytes FromBytesGeneric[E], toBytes ToBytesGeneric[E], lessFunc CompareLessFuncGeneric[E], config *Config) (*GenericSorter[E], <-chan E, <-chan error) {
 	var err error
 	s := newSorter(input, fromBytes, toBytes, lessFunc, config)
 	s.tempWriter, err = tempfile.New(s.config.TempFilesDir)
@@ -164,9 +184,11 @@ func Generic[E any](input chan E, fromBytes FromBytesGeneric[E], toBytes ToBytes
 	return s, s.mergeChunkChan, s.mergeErrChan
 }
 
-// MockGeneric is the same as Generic() but is backed by memory instead of a temporary file on disk.
-// n is the size to initialize the backing bytes buffer to.
-func MockGeneric[E any](input chan E, fromBytes FromBytesGeneric[E], toBytes ToBytesGeneric[E], lessFunc CompareLessFuncGeneric[E], config *Config, n int) (*GenericSorter[E], chan E, chan error) {
+// MockGeneric creates an external sorter that uses in-memory storage instead of disk files.
+// This is primarily useful for testing and benchmarking without filesystem I/O overhead.
+// The parameter n specifies the initial capacity of the in-memory buffer.
+// All other behavior is identical to Generic().
+func MockGeneric[E any](input <-chan E, fromBytes FromBytesGeneric[E], toBytes ToBytesGeneric[E], lessFunc CompareLessFuncGeneric[E], config *Config, n int) (*GenericSorter[E], <-chan E, <-chan error) {
 	s := newSorter(input, fromBytes, toBytes, lessFunc, config)
 	s.tempWriter = tempfile.Mock(n)
 	return s, s.mergeChunkChan, s.mergeErrChan
@@ -358,12 +380,23 @@ func (s *GenericSorter[E]) saveChunks() (err error) {
 func (s *GenericSorter[E]) mergeNChunks(ctx context.Context) {
 	defer close(s.mergeChunkChan)
 	defer func() {
-		err := s.tempReader.Close()
-		if err != nil {
-			s.mergeErrChan <- err
+		if s.tempReader != nil {
+			err := s.tempReader.Close()
+			if err != nil {
+				// Try to send error, but don't panic if channel is closed
+				select {
+				case s.mergeErrChan <- err:
+				default:
+				}
+			}
 		}
 	}()
+	// Always ensure error channel is closed
 	defer close(s.mergeErrChan)
+
+	if s.tempReader == nil {
+		return
+	}
 
 	numChunks := s.tempReader.Size()
 	if numChunks == 0 {
@@ -423,10 +456,14 @@ func (s *GenericSorter[E]) mergeNChunksSingleThreaded(ctx context.Context) {
 	}
 }
 
-// mergeNChunksParallel implements parallel k-way merging
+// mergeNChunksParallel implements parallel k-way merging with robust cancellation
 func (s *GenericSorter[E]) mergeNChunksParallel(ctx context.Context) {
 	numChunks := s.tempReader.Size()
 	numWorkers := s.config.NumMergeWorkers
+
+	// Create a cancellable context for all merge operations
+	mergeCtx, mergeCancel := context.WithCancel(ctx)
+	defer mergeCancel() // Ensure all goroutines stop when this function returns
 
 	// Create intermediate channels for each worker
 	intermediateChanSize := s.config.SortedChanBuffSize
@@ -435,9 +472,13 @@ func (s *GenericSorter[E]) mergeNChunksParallel(ctx context.Context) {
 		intermediateChans[i] = make(chan E, intermediateChanSize)
 	}
 
-	errChan := make(chan error, numWorkers)
+	// Error collection
+	errChan := make(chan error, numWorkers+1) // +1 for final merge errors
+	var mergeErr error
+	var errOnce sync.Once
 
-	// Divide chunks among workers and start them
+	// Start workers
+	var wg sync.WaitGroup
 	chunksPerWorker := (numChunks + numWorkers - 1) / numWorkers
 	workersStarted := 0
 
@@ -451,18 +492,57 @@ func (s *GenericSorter[E]) mergeNChunksParallel(ctx context.Context) {
 			break
 		}
 		workersStarted++
+		wg.Add(1)
 
-		go s.mergeWorker(ctx, startChunk, endChunk, intermediateChans[i], errChan)
+		go func(workerIdx, start, end int) {
+			defer wg.Done()
+			defer close(intermediateChans[workerIdx]) // Each worker closes its own channel
+
+			if err := s.mergeWorkerSimple(mergeCtx, start, end, intermediateChans[workerIdx]); err != nil {
+				errChan <- err
+				mergeCancel() // Cancel all operations on error
+			}
+		}(i, startChunk, endChunk)
 	}
 
-	// Final merge of intermediate results using priority queue
-	s.finalMergeStreaming(ctx, intermediateChans[:workersStarted], errChan)
+	// Start error collector
+	go func() {
+		for err := range errChan {
+			if err != nil {
+				errOnce.Do(func() {
+					mergeErr = err
+					mergeCancel() // Cancel all operations on first error
+				})
+			}
+		}
+	}()
+
+	// Start final merge in a goroutine to avoid blocking
+	var finalMergeWg sync.WaitGroup
+	finalMergeWg.Add(1)
+	go func() {
+		defer finalMergeWg.Done()
+		s.finalMergeSimple(mergeCtx, intermediateChans[:workersStarted])
+	}()
+
+	// Wait for all workers to complete
+	wg.Wait()
+
+	// Wait for final merge to complete
+	finalMergeWg.Wait()
+
+	close(errChan) // Signal error collector to stop
+
+	// Send any collected error
+	if mergeErr != nil {
+		s.mergeErrChan <- mergeErr
+	} else if ctx.Err() != nil {
+		s.mergeErrChan <- ctx.Err()
+	}
 }
 
-// mergeWorker merges a subset of chunks and sends results to output channel
-func (s *GenericSorter[E]) mergeWorker(ctx context.Context, startChunk, endChunk int, output chan<- E, errChan chan<- error) {
-	defer close(output)
-
+// mergeWorkerSimple merges a subset of chunks with proper context handling
+func (s *GenericSorter[E]) mergeWorkerSimple(ctx context.Context, startChunk, endChunk int, output chan<- E) error {
 	pq := queue.NewPriorityQueue(func(a, b *mergeFile[E]) bool {
 		return s.lessFunc(a.nextRec, b.nextRec)
 	})
@@ -477,19 +557,24 @@ func (s *GenericSorter[E]) mergeWorker(ctx context.Context, startChunk, endChunk
 			continue
 		}
 		if err != nil {
-			errChan <- err
-			return
+			return err
 		}
 		pq.Push(merge)
 	}
 
 	// Merge this worker's chunks
 	for pq.Len() > 0 {
+		// Check context before processing
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
 		merge := pq.Peek()
 		rec, more, err := merge.getNext()
 		if err != nil {
-			errChan <- err
-			return
+			return err
 		}
 		if more {
 			pq.PeekUpdate()
@@ -500,64 +585,48 @@ func (s *GenericSorter[E]) mergeWorker(ctx context.Context, startChunk, endChunk
 		select {
 		case output <- rec:
 		case <-ctx.Done():
-			errChan <- ctx.Err()
-			return
+			return ctx.Err()
 		}
 	}
 
-	errChan <- nil // Signal successful completion
+	return nil
 }
 
-// finalMergeStreaming performs streaming merge of intermediate results
-func (s *GenericSorter[E]) finalMergeStreaming(ctx context.Context, intermediateChans []chan E, errChan <-chan error) {
-	// Create merge sources for each intermediate channel
-	mergeSources := make([]*channelMergeSource[E], len(intermediateChans))
+// finalMergeSimple performs streaming merge with simpler synchronization
+func (s *GenericSorter[E]) finalMergeSimple(ctx context.Context, intermediateChans []chan E) {
 	pq := queue.NewPriorityQueue(func(a, b *channelMergeSource[E]) bool {
 		return s.lessFunc(a.nextRec, b.nextRec)
 	})
 
 	// Initialize sources
-	for i, ch := range intermediateChans {
+	for _, ch := range intermediateChans {
 		source := &channelMergeSource[E]{ch: ch}
-		if source.getNext() {
-			mergeSources[i] = source
+		if source.getNextSimple() {
 			pq.Push(source)
 		}
 	}
 
-	// Wait for workers to complete and collect any errors
-	go func() {
-		errCount := 0
-		for errCount < len(intermediateChans) {
-			select {
-			case err := <-errChan:
-				errCount++
-				if err != nil {
-					s.mergeErrChan <- err
-					return
-				}
-			case <-ctx.Done():
-				s.mergeErrChan <- ctx.Err()
-				return
-			}
-		}
-	}()
-
-	// Perform final streaming merge
+	// Perform final streaming merge with proper context handling
 	for pq.Len() > 0 {
-		source := pq.Peek()
-
-		select {
-		case s.mergeChunkChan <- source.nextRec:
-		case <-ctx.Done():
-			s.mergeErrChan <- ctx.Err()
+		// Check if context is cancelled before each iteration
+		if ctx.Err() != nil {
 			return
 		}
 
-		if source.getNext() {
-			pq.PeekUpdate()
-		} else {
-			pq.Pop()
+		source := pq.Peek()
+
+		// Try to send with context cancellation support
+		select {
+		case s.mergeChunkChan <- source.nextRec:
+			// Successfully sent, try to get next from this source
+			if source.getNextSimple() {
+				pq.PeekUpdate()
+			} else {
+				pq.Pop()
+			}
+		case <-ctx.Done():
+			// Context cancelled, exit immediately
+			return
 		}
 	}
 }
@@ -569,8 +638,10 @@ type channelMergeSource[E any] struct {
 	hasNext bool
 }
 
-func (c *channelMergeSource[E]) getNext() bool {
-	if rec, ok := <-c.ch; ok {
+// getNextSimple reads from channel without context (channel close handles cancellation)
+func (c *channelMergeSource[E]) getNextSimple() bool {
+	rec, ok := <-c.ch
+	if ok {
 		c.nextRec = rec
 		c.hasNext = true
 		return true
