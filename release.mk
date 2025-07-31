@@ -7,7 +7,7 @@ VERSION ?= $(shell git describe --tags --always --dirty)
 
 # Release target to create a new semantic version tag
 .PHONY: release
-release: fmt lint examples readme
+release: $(RELEASE_DEPS)
     # 1. Check for a clean working directory
 	@if ! git diff --quiet; then \
 		echo "Error: Working directory is not clean. Commit or stash changes before releasing."; \

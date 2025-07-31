@@ -1,5 +1,7 @@
 default: test
 
+RELEASE_DEPS=test fmt lint examples readme 
+
 include release.mk
 
 ALL_SOURCES := $(shell find . -type f -name '*.go')
