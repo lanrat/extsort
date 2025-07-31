@@ -1,10 +1,10 @@
 default: test
 
-include version.mk
+include release.mk
 
 ALL_SOURCES := $(shell find . -type f -name '*.go')
 
-.PHONY: fmt check test cover coverhtml examples
+.PHONY: fmt lint test cover coverhtml examples readme
 
 test:
 	go test -timeout=90s -v ./...
@@ -21,7 +21,7 @@ fmt:
 	go fmt ./...
 
 coverage.out: $(ALL_SOURCES)
-	go test -coverprofile=coverage.out ./...
+	go test -coverprofile=coverage.out $(shell go list ./... | grep -v examples)
 
 cover: coverage.out
 	go tool cover -func=coverage.out
@@ -29,9 +29,8 @@ cover: coverage.out
 coverhtml: coverage.out
 	go tool cover -html=coverage.out
 
-check:
-	golangci-lint run ./... || true
-	staticcheck -checks all ./...
+lint:
+	golangci-lint run ./...
 
 benchmark:
 	./run_benchmarks.sh
@@ -43,3 +42,6 @@ examples:
 			(cd "$$dir" && go run *.go > /dev/null); \
 		fi; \
 	done
+
+readme:
+	go run examples/update_readme_examples.go

@@ -1,17 +1,12 @@
 package extsort
 
+import "cmp"
+
 // StringSorter provides external sorting for strings, maintaining backward compatibility
 // with the legacy string-specific API. It embeds GenericSorter[string] and uses
 // simple byte slice conversion for serialization.
 type StringSorter struct {
 	GenericSorter[string]
-}
-
-// lessFuncStrings provides lexicographic string comparison.
-// Returns true if string a is lexicographically less than string b.
-func lessFuncStrings(a, b string) bool {
-	// TODO can be replaced with cmp.Compare[T] when returning int type
-	return a < b
 }
 
 // fromBytesString converts a byte slice back to a string.
@@ -30,7 +25,7 @@ func toBytesString(s string) []byte {
 // Returns the sorter instance, output channel with sorted strings, and error channel.
 // This function provides backward compatibility with the legacy string-specific API.
 func Strings(input <-chan string, config *Config) (*StringSorter, <-chan string, <-chan error) {
-	genericSorter, output, errChan := Generic(input, fromBytesString, toBytesString, lessFuncStrings, config)
+	genericSorter, output, errChan := Generic(input, fromBytesString, toBytesString, cmp.Compare, config)
 	s := &StringSorter{GenericSorter: *genericSorter}
 	return s, output, errChan
 }
@@ -39,7 +34,7 @@ func Strings(input <-chan string, config *Config) (*StringSorter, <-chan string,
 // the number of strings to sort. Useful for testing with a controlled dataset size.
 // The parameter n specifies the maximum number of strings to process.
 func StringsMock(input <-chan string, config *Config, n int) (*StringSorter, <-chan string, <-chan error) {
-	genericSorter, output, errChan := MockGeneric(input, fromBytesString, toBytesString, lessFuncStrings, config, n)
+	genericSorter, output, errChan := MockGeneric(input, fromBytesString, toBytesString, cmp.Compare, config, n)
 	s := &StringSorter{GenericSorter: *genericSorter}
 	return s, output, errChan
 }

@@ -5,19 +5,18 @@
 # `--dirty` will append "-dirty" if the working directory has uncommitted changes.
 VERSION ?= $(shell git describe --tags --always --dirty)
 
-
 # Release target to create a new semantic version tag
 .PHONY: release
-release: check
-    # This shell 'if' statement runs at execution time, not parse time.
-	@if [ -z "$(BUMP)" ]; then \
-		echo "Error: BUMP is not set. Usage: make release BUMP=patch|minor|major"; \
-		exit 1; \
-	fi
-
+release: fmt lint examples readme
     # 1. Check for a clean working directory
 	@if ! git diff --quiet; then \
 		echo "Error: Working directory is not clean. Commit or stash changes before releasing."; \
+		exit 1; \
+	fi
+	
+    # This shell 'if' statement runs at execution time, not parse time.
+	@if [ -z "$(BUMP)" ]; then \
+		echo "Error: BUMP is not set. Usage: make release BUMP=patch|minor|major"; \
 		exit 1; \
 	fi
 

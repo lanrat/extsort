@@ -6,7 +6,7 @@ import (
 	"context"
 	"encoding/binary"
 	"io"
-	"sort"
+	"slices"
 	"sync"
 
 	"github.com/lanrat/extsort/queue"
@@ -16,10 +16,9 @@ import (
 )
 
 // genericChunk represents a collection of any data that can be sorted.
-// It implements sort.Interface for efficient sorting operations.
+// It holds data in memory before being sorted using slices.SortFunc.
 type genericChunk[E any] struct {
 	data []E
-	less CompareLessFuncGeneric[E]
 }
 
 // getChunk retrieves a chunk from the pool and initializes it
@@ -31,7 +30,6 @@ func (s *GenericSorter[E]) getChunk() *genericChunk[E] {
 	*slicePtr = (*slicePtr)[:0] // Reset length but keep capacity
 
 	c.data = *slicePtr
-	c.less = s.lessFunc
 	return c
 }
 
@@ -46,21 +44,6 @@ func (s *GenericSorter[E]) putChunk(c *genericChunk[E]) {
 		// Return the chunk to the pool
 		s.pools.chunkPool.Put(c)
 	}
-}
-
-// Len returns the number of elements in the chunk (implements sort.Interface).
-func (c *genericChunk[E]) Len() int {
-	return len(c.data)
-}
-
-// Swap swaps the elements with indexes i and j (implements sort.Interface).
-func (c *genericChunk[E]) Swap(i, j int) {
-	c.data[i], c.data[j] = c.data[j], c.data[i]
-}
-
-// Less reports whether the element with index i should sort before the element with index j (implements sort.Interface).
-func (c *genericChunk[E]) Less(i, j int) bool {
-	return c.less(c.data[i], c.data[j])
 }
 
 // memoryPools holds sync.Pool instances for memory reuse
@@ -87,7 +70,7 @@ type GenericSorter[E any] struct {
 	chunkChan      chan *genericChunk[E]
 	saveChunkChan  chan *genericChunk[E]
 	mergeChunkChan chan E
-	lessFunc       CompareLessFuncGeneric[E]
+	compareFunc    CompareGeneric[E]
 	fromBytes      FromBytesGeneric[E]
 	toBytes        ToBytesGeneric[E]
 	pools          *memoryPools
@@ -96,17 +79,19 @@ type GenericSorter[E any] struct {
 // newSorter creates a new GenericSorter instance with the given configuration.
 // This internal constructor initializes all channels, applies configuration defaults,
 // and sets up memory pools for efficient resource reuse during sorting operations.
-func newSorter[E any](input <-chan E, fromBytes FromBytesGeneric[E], toBytes ToBytesGeneric[E], lessFunc CompareLessFuncGeneric[E], config *Config) *GenericSorter[E] {
-	s := new(GenericSorter[E])
-	s.input = input
-	s.lessFunc = lessFunc
-	s.fromBytes = fromBytes
-	s.toBytes = toBytes
-	s.config = *mergeConfig(config)
-	s.chunkChan = make(chan *genericChunk[E], s.config.ChanBuffSize)
-	s.saveChunkChan = make(chan *genericChunk[E], s.config.ChanBuffSize)
-	s.mergeChunkChan = make(chan E, s.config.SortedChanBuffSize)
-	s.mergeErrChan = make(chan error, 1)
+func newSorter[E any](input <-chan E, fromBytes FromBytesGeneric[E], toBytes ToBytesGeneric[E], compareFunc CompareGeneric[E], config *Config) *GenericSorter[E] {
+	config = mergeConfig(config)
+	s := &GenericSorter[E]{
+		input:          input,
+		compareFunc:    compareFunc,
+		fromBytes:      fromBytes,
+		toBytes:        toBytes,
+		config:         *config,
+		chunkChan:      make(chan *genericChunk[E], config.ChanBuffSize),
+		saveChunkChan:  make(chan *genericChunk[E], config.ChanBuffSize),
+		mergeChunkChan: make(chan E, config.SortedChanBuffSize),
+		mergeErrChan:   make(chan error, 1),
+	}
 	s.pools = s.initMemoryPools()
 	return s
 }
@@ -120,9 +105,7 @@ func (s *GenericSorter[E]) initMemoryPools() *memoryPools {
 	// Pool for chunk objects
 	pools.chunkPool = sync.Pool{
 		New: func() any {
-			return &genericChunk[E]{
-				less: s.lessFunc,
-			}
+			return &genericChunk[E]{}
 		},
 	}
 
@@ -160,21 +143,21 @@ func (s *GenericSorter[E]) initMemoryPools() *memoryPools {
 //   - input: Channel providing the data to be sorted
 //   - fromBytes: Function to deserialize E from bytes when reading from disk
 //   - toBytes: Function to serialize E to bytes when writing to disk
-//   - lessFunc: Comparison function that returns true if first argument is less than second
+//   - compareFunc: Comparison function that returns negative/zero/positive for less/equal/greater
 //   - config: Configuration options (nil uses defaults)
 //
 // The sorting process:
 //  1. Reads data from input channel into memory chunks
-//  2. Sorts each chunk in parallel using the provided lessFunc
+//  2. Sorts each chunk in parallel using the provided compareFunc
 //  3. Saves sorted chunks to temporary files using toBytes serialization
 //  4. Merges all chunks back into sorted order using fromBytes deserialization
 //
 // Call Sort() on the returned sorter to begin the sorting process.
 // Results are delivered via the output channel, errors via the error channel.
 // On error or interruption, temporary files may remain in config.TempFilesDir.
-func Generic[E any](input <-chan E, fromBytes FromBytesGeneric[E], toBytes ToBytesGeneric[E], lessFunc CompareLessFuncGeneric[E], config *Config) (*GenericSorter[E], <-chan E, <-chan error) {
+func Generic[E any](input <-chan E, fromBytes FromBytesGeneric[E], toBytes ToBytesGeneric[E], compareFunc CompareGeneric[E], config *Config) (*GenericSorter[E], <-chan E, <-chan error) {
 	var err error
-	s := newSorter(input, fromBytes, toBytes, lessFunc, config)
+	s := newSorter(input, fromBytes, toBytes, compareFunc, config)
 	s.tempWriter, err = tempfile.New(s.config.TempFilesDir)
 	if err != nil {
 		s.mergeErrChan <- err
@@ -188,8 +171,8 @@ func Generic[E any](input <-chan E, fromBytes FromBytesGeneric[E], toBytes ToByt
 // This is primarily useful for testing and benchmarking without filesystem I/O overhead.
 // The parameter n specifies the initial capacity of the in-memory buffer.
 // All other behavior is identical to Generic().
-func MockGeneric[E any](input <-chan E, fromBytes FromBytesGeneric[E], toBytes ToBytesGeneric[E], lessFunc CompareLessFuncGeneric[E], config *Config, n int) (*GenericSorter[E], <-chan E, <-chan error) {
-	s := newSorter(input, fromBytes, toBytes, lessFunc, config)
+func MockGeneric[E any](input <-chan E, fromBytes FromBytesGeneric[E], toBytes ToBytesGeneric[E], compareFunc CompareGeneric[E], config *Config, n int) (*GenericSorter[E], <-chan E, <-chan error) {
+	s := newSorter(input, fromBytes, toBytes, compareFunc, config)
 	s.tempWriter = tempfile.Mock(n)
 	return s, s.mergeChunkChan, s.mergeErrChan
 }
@@ -289,9 +272,7 @@ func (s *GenericSorter[E]) sortChunks() error {
 							sortDone <- nil // Success
 						}
 					}()
-					// TODO in a future version: migrate to slices.SortFunc().
-					// Will require the new less func to return an int, not bool
-					sort.Sort(b)
+					slices.SortFunc(b.data, s.compareFunc)
 				}()
 
 				// Wait for either sort completion or context cancellation
@@ -415,14 +396,15 @@ func (s *GenericSorter[E]) mergeNChunks(ctx context.Context) {
 
 // mergeNChunksSingleThreaded is the original single-threaded implementation
 func (s *GenericSorter[E]) mergeNChunksSingleThreaded(ctx context.Context) {
-	pq := queue.NewPriorityQueue(func(a, b *mergeFile[E]) bool {
-		return s.lessFunc(a.nextRec, b.nextRec)
+	pq := queue.NewPriorityQueue(func(a, b *mergeFile[E]) int {
+		return s.compareFunc(a.nextRec, b.nextRec)
 	})
 
 	for i := 0; i < s.tempReader.Size(); i++ {
-		merge := new(mergeFile[E])
-		merge.fromBytes = s.fromBytes
-		merge.reader = s.tempReader.Read(i)
+		merge := &mergeFile[E]{
+			fromBytes: s.fromBytes,
+			reader:    s.tempReader.Read(i),
+		}
 		_, ok, err := merge.getNext() // start the merge by preloading the values
 		if err == io.EOF || !ok {
 			continue
@@ -543,15 +525,16 @@ func (s *GenericSorter[E]) mergeNChunksParallel(ctx context.Context) {
 
 // mergeWorkerSimple merges a subset of chunks with proper context handling
 func (s *GenericSorter[E]) mergeWorkerSimple(ctx context.Context, startChunk, endChunk int, output chan<- E) error {
-	pq := queue.NewPriorityQueue(func(a, b *mergeFile[E]) bool {
-		return s.lessFunc(a.nextRec, b.nextRec)
+	pq := queue.NewPriorityQueue(func(a, b *mergeFile[E]) int {
+		return s.compareFunc(a.nextRec, b.nextRec)
 	})
 
 	// Initialize merge files for this worker's chunk range
 	for i := startChunk; i < endChunk; i++ {
-		merge := new(mergeFile[E])
-		merge.fromBytes = s.fromBytes
-		merge.reader = s.tempReader.Read(i)
+		merge := &mergeFile[E]{
+			fromBytes: s.fromBytes,
+			reader:    s.tempReader.Read(i),
+		}
 		_, ok, err := merge.getNext()
 		if err == io.EOF || !ok {
 			continue
@@ -594,8 +577,8 @@ func (s *GenericSorter[E]) mergeWorkerSimple(ctx context.Context, startChunk, en
 
 // finalMergeSimple performs streaming merge with simpler synchronization
 func (s *GenericSorter[E]) finalMergeSimple(ctx context.Context, intermediateChans []chan E) {
-	pq := queue.NewPriorityQueue(func(a, b *channelMergeSource[E]) bool {
-		return s.lessFunc(a.nextRec, b.nextRec)
+	pq := queue.NewPriorityQueue(func(a, b *channelMergeSource[E]) int {
+		return s.compareFunc(a.nextRec, b.nextRec)
 	})
 
 	// Initialize sources

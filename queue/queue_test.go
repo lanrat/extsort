@@ -1,19 +1,14 @@
 package queue_test
 
 import (
+	"cmp"
 	"testing"
 
 	"github.com/lanrat/extsort/queue"
 )
 
-func intCompareFunc(a interface{}, b interface{}) bool {
-	ai := a.(int)
-	bi := b.(int)
-	return ai < bi
-}
-
 func TestInit0(t *testing.T) {
-	q := queue.NewPriorityQueue(intCompareFunc)
+	q := queue.NewPriorityQueue(cmp.Compare[int])
 	for i := 20; i > 0; i-- {
 		q.Push(0) // all elements are the same
 	}
@@ -24,8 +19,8 @@ func TestInit0(t *testing.T) {
 	}
 
 	for i := 1; q.Len() > 0; i++ {
-		x := q.Peek().(int)
-		y := q.Pop().(int)
+		x := q.Peek()
+		y := q.Pop()
 		if x != y {
 			t.Fatalf("q.Peek() and q.Pop() returned different values %d %d", x, y)
 		}
@@ -36,7 +31,7 @@ func TestInit0(t *testing.T) {
 }
 
 func Test(t *testing.T) {
-	q := queue.NewPriorityQueue(intCompareFunc)
+	q := queue.NewPriorityQueue(cmp.Compare[int])
 	l := q.Len()
 	if l != 0 {
 		t.Fatalf("queue len is %d, expected %d", l, 0)
@@ -61,8 +56,8 @@ func Test(t *testing.T) {
 	}
 
 	for i := 1; q.Len() > 0; i++ {
-		x := q.Peek().(int)
-		y := q.Pop().(int)
+		x := q.Peek()
+		y := q.Pop()
 		if x != y {
 			t.Fatalf("q.Peek() and q.Pop() returned different values %d %d", x, y)
 		}

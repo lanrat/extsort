@@ -27,8 +27,6 @@ go get github.com/lanrat/extsort
 The modern generic API provides type safety and improved performance:
 
 ```go
-package main
-
 import (
     "context"
     "fmt"
@@ -49,15 +47,15 @@ func main() {
 
     // Sort using the generic API
     sorter, outputChan, errChan := extsort.Ordered(inputChan, nil)
-    
+
     // Start sorting in background
     go sorter.Sort(context.Background())
-    
+
     // Process sorted results
     for value := range outputChan {
-        fmt.pintle(value)
+        fmt.Println(value)
     }
-    
+
     // Check for errors
     if err := <-errChan; err != nil {
         panic(err)
@@ -70,8 +68,6 @@ func main() {
 For string data, use the optimized string sorter:
 
 ```go
-package main
-
 import (
     "context"
     "fmt"
@@ -81,7 +77,7 @@ import (
 
 func main() {
     words := []string{"zebra", "apple", "banana", "cherry"}
-    
+
     inputChan := make(chan string, len(words))
     for _, word := range words {
         inputChan <- word
@@ -105,12 +101,10 @@ func main() {
 ### Custom Types with Generic API
 
 ```go
-package main
-
 import (
+    "bytes"
     "context"
     "encoding/gob"
-    "bytes"
     "fmt"
 
     "github.com/lanrat/extsort"
@@ -124,7 +118,10 @@ type Person struct {
 func personToBytes(p Person) []byte {
     var buf bytes.Buffer
     enc := gob.NewEncoder(&buf)
-    enc.Encode(p)
+    err := enc.Encode(p)
+    if err != nil {
+        panic(err)
+    }
     return buf.Bytes()
 }
 
@@ -132,12 +129,22 @@ func personFromBytes(data []byte) Person {
     var p Person
     buf := bytes.NewReader(data)
     dec := gob.NewDecoder(buf)
-    dec.Decode(&p)
+    err := dec.Decode(&p)
+    if err != nil {
+        panic(err)
+    }
     return p
 }
 
-func comparePersons(a, b Person) bool {
-    return a.Age < b.Age // Sort by age
+func comparePersonsByAge(a, b Person) int {
+    // Sort by age
+    if a.Age != b.Age {
+        if a.Age < b.Age {
+            return -1
+        }
+        return 1
+    }
+    return 0
 }
 
 func main() {
@@ -154,13 +161,13 @@ func main() {
     close(inputChan)
 
     sorter, outputChan, errChan := extsort.Generic(
-        inputChan, 
-        personFromBytes, 
-        personToBytes, 
-        comparePersons, 
+        inputChan,
+        personFromBytes,
+        personToBytes,
+        comparePersonsByAge,
         nil,
     )
-    
+
     go sorter.Sort(context.Background())
 
     fmt.Println("People sorted by age:")
@@ -196,8 +203,6 @@ sorter, outputChan, errChan := extsort.Ordered(inputChan, config)
 The library maintains backward compatibility with the original interface-based API:
 
 ```go
-package main
-
 import (
     "context"
     "encoding/binary"
@@ -236,12 +241,12 @@ func main() {
     }()
 
     sorter, outputChan, errChan := extsort.New(
-        inputChan, 
-        sortIntFromBytes, 
-        compareSortInt, 
+        inputChan,
+        sortIntFromBytes,
+        compareSortInt,
         nil,
     )
-    
+
     go sorter.Sort(context.Background())
 
     for item := range outputChan {
@@ -261,8 +266,6 @@ The `diff` sub-package provides functionality for comparing two sorted data stre
 ### Basic String Diff
 
 ```go
-package main
-
 import (
     "context"
     "fmt"
@@ -274,7 +277,7 @@ func main() {
     // Create two sorted string channels
     streamA := make(chan string, 5)
     streamB := make(chan string, 5)
-    
+
     // Populate stream A
     go func() {
         defer close(streamA)
@@ -282,7 +285,7 @@ func main() {
             streamA <- item
         }
     }()
-    
+
     // Populate stream B
     go func() {
         defer close(streamB)
@@ -290,13 +293,13 @@ func main() {
             streamB <- item
         }
     }()
-    
+
     // Create error channels
     errA := make(chan error, 1)
     errB := make(chan error, 1)
     close(errA)
     close(errB)
-    
+
     // Process differences
     result, err := diff.Strings(
         context.Background(),
@@ -312,11 +315,11 @@ func main() {
             return nil
         },
     )
-    
+
     if err != nil {
         panic(err)
     }
-    
+
     fmt.Printf("Summary: %d items only in A, %d items only in B, %d common items\n",
         result.ExtraA, result.ExtraB, result.Common)
 }
@@ -325,12 +328,9 @@ func main() {
 ### Generic Diff for Custom Types
 
 ```go
-package main
-
 import (
     "context"
     "fmt"
-    "strconv"
 
     "github.com/lanrat/extsort/diff"
 )
@@ -341,7 +341,7 @@ func main() {
     streamB := make(chan int, 5)
     errA := make(chan error, 1)
     errB := make(chan error, 1)
-    
+
     // Populate streams
     go func() {
         defer close(streamA)
@@ -350,28 +350,32 @@ func main() {
             streamA <- num
         }
     }()
-    
+
     go func() {
-        defer close(streamB)  
+        defer close(streamB)
         defer close(errB)
         for _, num := range []int{2, 4, 5, 6, 8} {
             streamB <- num
         }
     }()
-    
+
     // Compare using generic diff
     compareFunc := func(a, b int) int {
-        if a < b { return -1 }
-        if a > b { return 1 }
+        if a < b {
+            return -1
+        }
+        if a > b {
+            return 1
+        }
         return 0
     }
-    
+
     resultFunc := func(delta diff.Delta, item int) error {
         symbol := map[diff.Delta]string{diff.OLD: "<", diff.NEW: ">"}[delta]
         fmt.Printf("%s %d\n", symbol, item)
         return nil
     }
-    
+
     result, err := diff.Generic(
         context.Background(),
         streamA, streamB,
@@ -379,11 +383,11 @@ func main() {
         compareFunc,
         resultFunc,
     )
-    
+
     if err != nil {
         panic(err)
     }
-    
+
     fmt.Printf("Differences found: %d\n", result.ExtraA+result.ExtraB)
 }
 ```
@@ -391,8 +395,6 @@ func main() {
 ### Parallel Diff Processing
 
 ```go
-package main
-
 import (
     "context"
     "fmt"
@@ -406,7 +408,7 @@ func main() {
     streamB := make(chan string, 100)
     errA := make(chan error, 1)
     errB := make(chan error, 1)
-    
+
     // Populate streams with test data
     go func() {
         defer close(streamA)
@@ -415,21 +417,21 @@ func main() {
             streamA <- fmt.Sprintf("item_%03d", i)
         }
     }()
-    
+
     go func() {
         defer close(streamB)
-        defer close(errB) 
+        defer close(errB)
         for i := 1; i < 50; i += 2 {
             streamB <- fmt.Sprintf("item_%03d", i)
         }
     }()
-    
+
     // Use channel-based result processing for parallel handling
     resultFunc, resultChan := diff.StringResultChan()
-    
+
     var wg sync.WaitGroup
     wg.Add(1)
-    
+
     // Process results in parallel
     go func() {
         defer wg.Done()
@@ -437,7 +439,7 @@ func main() {
             fmt.Printf("Difference: %s %s\n", result.D, result.S)
         }
     }()
-    
+
     // Start diff operation
     go func() {
         defer close(resultChan)
@@ -451,7 +453,7 @@ func main() {
             fmt.Printf("Diff error: %v\n", err)
         }
     }()
-    
+
     wg.Wait()
     fmt.Println("Diff processing complete")
 }

@@ -25,9 +25,10 @@ type FromBytesGeneric[E any] func([]byte) E
 // by the corresponding FromBytesGeneric function, and must handle any errors by panicking.
 type ToBytesGeneric[E any] func(E) []byte
 
-// CompareLessFuncGeneric is a function type for comparing two items of type E.
+// CompareGeneric is a function type for comparing two items of type E.
 // It must implement a strict weak ordering: reflexivity, antisymmetry, and transitivity.
-// Returns true if the first argument should be ordered before the second in the final sorted output.
+// Returns a negative integer if a should be ordered before b, zero if they are equal,
+// and a positive integer if a should be ordered after b in the final sorted output.
 // The function must be consistent and must handle any errors by panicking.
-// TODO in a future version, this function should return an int.
-type CompareLessFuncGeneric[E any] func(a, b E) bool
+// This follows the same semantics as cmp.Compare and can be implemented using cmp.Compare[T] for ordered types.
+type CompareGeneric[E any] func(a, b E) int

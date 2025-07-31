@@ -64,13 +64,6 @@ type StringResultFunc ResultFunc[string]
 // This follows the same convention as strings.Compare and cmp.Compare.
 type CompareFunc[T any] func(T, T) int
 
-// StringResultFunc is a callback function type for processing diff results.
-// It is called once for each item that appears in only one of the two streams.
-// The Delta parameter indicates which stream the item belongs to (NEW or OLD).
-// The string parameter contains the actual item value.
-// If the function returns an error, the diff operation will be terminated.
-//type StringResultFunc func(Delta, string) error
-
 func (d Delta) String() string {
 	switch d {
 	case NEW:

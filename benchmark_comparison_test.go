@@ -1,6 +1,7 @@
 package extsort_test
 
 import (
+	"cmp"
 	"context"
 	"encoding/binary"
 	"fmt"
@@ -46,7 +47,7 @@ func BenchmarkGenericIntSortComparison(b *testing.B) {
 						inputChan,
 						intFromBytes,
 						intToBytes,
-						func(a, b int) bool { return a < b },
+						cmp.Compare[int],
 						config,
 					)
 
@@ -232,7 +233,7 @@ func BenchmarkGenericIntSortMemory(b *testing.B) {
 			inputChan,
 			intFromBytes,
 			intToBytes,
-			func(a, b int) bool { return a < b },
+			cmp.Compare[int],
 			config,
 		)
 

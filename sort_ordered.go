@@ -28,13 +28,6 @@ func newOrderedSorter[T cmp.Ordered]() *OrderedSorter[T] {
 	return s
 }
 
-// lessFuncOrdered provides the comparison function for ordered types.
-// It uses the < operator which is available for all cmp.Ordered types.
-func lessFuncOrdered[T cmp.Ordered](a, b T) bool {
-	// TODO can be replaced with cmp.Compare[T] when returning int type
-	return a < b
-}
-
 // fromBytesOrdered deserializes a byte slice back to the original type T
 // using gob decoding. It reuses buffers from the pool for efficiency.
 // Panics if decoding fails.
@@ -78,7 +71,7 @@ func (s *OrderedSorter[T]) toBytesOrdered(d T) []byte {
 // Uses gob encoding for serialization and the < operator for comparison.
 func Ordered[T cmp.Ordered](input <-chan T, config *Config) (*OrderedSorter[T], <-chan T, <-chan error) {
 	orderedSorter := newOrderedSorter[T]()
-	s, output, errChan := Generic(input, orderedSorter.fromBytesOrdered, orderedSorter.toBytesOrdered, lessFuncOrdered, config)
+	s, output, errChan := Generic(input, orderedSorter.fromBytesOrdered, orderedSorter.toBytesOrdered, cmp.Compare, config)
 	orderedSorter.GenericSorter = *s
 	return orderedSorter, output, errChan
 }
@@ -88,7 +81,7 @@ func Ordered[T cmp.Ordered](input <-chan T, config *Config) (*OrderedSorter[T], 
 // Ordered plus n which limits the number of items processed.
 func OrderedMock[T cmp.Ordered](input <-chan T, config *Config, n int) (*OrderedSorter[T], <-chan T, <-chan error) {
 	orderedSorter := newOrderedSorter[T]()
-	s, output, errChan := MockGeneric(input, orderedSorter.fromBytesOrdered, orderedSorter.toBytesOrdered, lessFuncOrdered, config, n)
+	s, output, errChan := MockGeneric(input, orderedSorter.fromBytesOrdered, orderedSorter.toBytesOrdered, cmp.Compare, config, n)
 	orderedSorter.GenericSorter = *s
 	return orderedSorter, output, errChan
 }

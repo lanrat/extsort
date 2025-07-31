@@ -20,8 +20,8 @@ type item[E any] struct {
 
 // innerPriorityQueue implements heap.Interface and holds Items
 type innerPriorityQueue[E any] struct {
-	items    []*item[E]
-	lessFunc func(E, E) bool
+	items       []*item[E]
+	compareFunc func(E, E) int
 }
 
 // PriorityQueue is a generic priority queue that maintains elements in sorted order
@@ -34,13 +34,14 @@ type PriorityQueue[E any] struct {
 }
 
 // NewPriorityQueue creates a new priority queue with the given comparison function.
-// The cmpFunc should return true if the first argument should have higher priority
-// (appear earlier) than the second argument. For ascending order, use a < b.
+// The cmpFunc should return a negative integer if the first argument should have higher priority
+// (appear earlier) than the second argument, zero if they are equal, and a positive integer
+// if the first should appear later. For ascending order, use cmp.Compare(a, b).
 // The queue starts empty and elements can be added with Push().
-func NewPriorityQueue[E any](cmpFunc func(E, E) bool) *PriorityQueue[E] {
+func NewPriorityQueue[E any](cmpFunc func(E, E) int) *PriorityQueue[E] {
 	var pq PriorityQueue[E]
 	pq.ipq.items = make([]*(item[E]), 0)
-	pq.ipq.lessFunc = cmpFunc
+	pq.ipq.compareFunc = cmpFunc
 	heap.Init(&pq.ipq)
 	return &pq
 }
@@ -101,7 +102,8 @@ func (pq *innerPriorityQueue[E]) Len() int {
 }
 
 func (pq *innerPriorityQueue[E]) Less(i, j int) bool {
-	return pq.lessFunc(pq.items[i].value, pq.items[j].value)
+	// TODO make full use of compareFunc returning an int
+	return pq.compareFunc(pq.items[i].value, pq.items[j].value) < 0
 }
 
 func (pq *innerPriorityQueue[E]) Swap(i, j int) {

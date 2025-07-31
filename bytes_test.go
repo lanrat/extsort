@@ -230,6 +230,7 @@ func TestRandom1M(t *testing.T) {
 	for i := 0; i < len(b); i++ {
 		if !Equals(b[i], a[i]) {
 			t.Error("oops")
+			break
 		}
 	}
 }

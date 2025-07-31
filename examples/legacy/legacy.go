@@ -19,16 +19,19 @@ func (s sortInt) ToBytes() []byte {
 	return buf
 }
 
+//nolint:staticcheck // SA1019: This example intentionally demonstrates the legacy API
 func sortIntFromBytes(data []byte) extsort.SortType {
 	value := int64(binary.LittleEndian.Uint64(data))
 	return sortInt{value: value}
 }
 
+//nolint:staticcheck // SA1019: This example intentionally demonstrates the legacy API
 func compareSortInt(a, b extsort.SortType) bool {
 	return a.(sortInt).value < b.(sortInt).value
 }
 
 func main() {
+	//nolint:staticcheck // SA1019: This example intentionally demonstrates the legacy API
 	inputChan := make(chan extsort.SortType, 100)
 	go func() {
 		defer close(inputChan)
@@ -37,6 +40,7 @@ func main() {
 		}
 	}()
 
+	//nolint:staticcheck // SA1019: This example intentionally demonstrates the legacy API
 	sorter, outputChan, errChan := extsort.New(
 		inputChan,
 		sortIntFromBytes,

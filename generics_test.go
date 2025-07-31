@@ -1,6 +1,7 @@
 package extsort_test
 
 import (
+	"cmp"
 	"context"
 	"encoding/binary"
 	"math/rand"
@@ -54,12 +55,21 @@ func PersonFromBytes(data []byte) Person {
 	return Person{Name: name, Age: age}
 }
 
-// PersonLessFunc compares two Person structs by age, then by name
-func PersonLessFunc(a, b Person) bool {
+// PersonCmpFunc compares two Person structs by age, then by name
+func PersonCmpFunc(a, b Person) int {
 	if a.Age != b.Age {
-		return a.Age < b.Age
+		if a.Age < b.Age {
+			return -1
+		}
+		return 1
 	}
-	return a.Name < b.Name
+	if a.Name < b.Name {
+		return -1
+	}
+	if a.Name > b.Name {
+		return 1
+	}
+	return 0
 }
 
 // Test custom struct sorting
@@ -85,7 +95,7 @@ func TestGenericPersonSort(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	sorter, outChan, errChan := extsort.Generic(inputChan, PersonFromBytes, PersonToBytes, PersonLessFunc, config)
+	sorter, outChan, errChan := extsort.Generic(inputChan, PersonFromBytes, PersonToBytes, PersonCmpFunc, config)
 	sorter.Sort(ctx)
 
 	var result []Person
@@ -155,7 +165,7 @@ func TestGenericIntSort(t *testing.T) {
 			binary.LittleEndian.PutUint64(b, uint64(i))
 			return b
 		},
-		func(a, b int) bool { return a < b },
+		cmp.Compare[int],
 		config,
 	)
 
@@ -222,7 +232,7 @@ func TestGenericFloat64Sort(t *testing.T) {
 			binary.LittleEndian.PutUint64(b, bits)
 			return b
 		},
-		func(a, b float64) bool { return a < b },
+		cmp.Compare[float64],
 		config,
 	)
 
@@ -278,7 +288,7 @@ func TestGenericStringSort(t *testing.T) {
 		inputChan,
 		func(b []byte) string { return string(b) },
 		func(s string) []byte { return []byte(s) },
-		func(a, b string) bool { return a < b },
+		cmp.Compare[string],
 		config,
 	)
 
@@ -343,7 +353,7 @@ func TestGenericMockSort(t *testing.T) {
 			binary.LittleEndian.PutUint64(b, uint64(i))
 			return b
 		},
-		func(a, b int) bool { return a < b },
+		cmp.Compare[int],
 		config,
 		1024, // mock buffer size
 	)
@@ -413,7 +423,7 @@ func TestGenericLargeDataset(t *testing.T) {
 			binary.LittleEndian.PutUint64(b, uint64(i))
 			return b
 		},
-		func(a, b int) bool { return a < b },
+		cmp.Compare[int],
 		config,
 	)
 
@@ -468,7 +478,7 @@ func TestGenericSorterInterface(t *testing.T) {
 		inputChan,
 		func(b []byte) int { return 0 },
 		func(i int) []byte { return nil },
-		func(a, b int) bool { return a < b },
+		cmp.Compare[int],
 		config,
 	)
 
@@ -491,7 +501,7 @@ func TestGenericEmptyInput(t *testing.T) {
 		inputChan,
 		func(b []byte) int { return 0 },
 		func(i int) []byte { return []byte{} },
-		func(a, b int) bool { return a < b },
+		cmp.Compare[int],
 		config,
 	)
 
@@ -559,7 +569,7 @@ func BenchmarkGenericIntSort(b *testing.B) {
 				binary.LittleEndian.PutUint64(b, uint64(i))
 				return b
 			},
-			func(a, b int) bool { return a < b },
+			cmp.Compare[int],
 			config,
 		)
 
