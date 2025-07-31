@@ -30,8 +30,8 @@ func newOrderedSorter[T cmp.Ordered]() *OrderedSorter[T] {
 
 // fromBytesOrdered deserializes a byte slice back to the original type T
 // using gob decoding. It reuses buffers from the pool for efficiency.
-// Panics if decoding fails.
-func (s *OrderedSorter[T]) fromBytesOrdered(d []byte) T {
+// Returns an error if decoding fails.
+func (s *OrderedSorter[T]) fromBytesOrdered(d []byte) (T, error) {
 	var v T
 	buf := s.bufferPool.Get().(*bytes.Buffer)
 	buf.Reset()
@@ -40,16 +40,13 @@ func (s *OrderedSorter[T]) fromBytesOrdered(d []byte) T {
 
 	dec := gob.NewDecoder(buf)
 	err := dec.Decode(&v)
-	if err != nil {
-		panic(err)
-	}
-	return v
+	return v, err
 }
 
 // toBytesOrdered serializes a value of type T to bytes using gob encoding.
 // It reuses buffers from the pool and returns a copy of the serialized data.
-// Panics if encoding fails.
-func (s *OrderedSorter[T]) toBytesOrdered(d T) []byte {
+// Returns an error if encoding fails.
+func (s *OrderedSorter[T]) toBytesOrdered(d T) ([]byte, error) {
 	buf := s.bufferPool.Get().(*bytes.Buffer)
 	buf.Reset()
 	defer s.bufferPool.Put(buf)
@@ -57,13 +54,13 @@ func (s *OrderedSorter[T]) toBytesOrdered(d T) []byte {
 	enc := gob.NewEncoder(buf)
 	err := enc.Encode(d)
 	if err != nil {
-		panic(err)
+		return nil, err
 	}
 
 	// Need to copy the bytes since we're returning the buffer to the pool
 	result := make([]byte, buf.Len())
 	copy(result, buf.Bytes())
-	return result
+	return result, nil
 }
 
 // Ordered performs external sorting on a channel of cmp.Ordered types.

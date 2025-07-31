@@ -196,6 +196,8 @@ func (s *GenericSorter[E]) Sort(ctx context.Context) {
 		buildSortErrGroup.Go(s.sortChunks)
 	}
 
+	// TODO detect a single chunk and don't save it to disk
+
 	// save chunks
 	saveErrGroup.Go(s.saveChunks)
 
@@ -302,17 +304,12 @@ func (s *GenericSorter[E]) sortChunks() error {
 	}
 }
 
-// saveChunks is a worker for saving sorted data to disk
+// saveChunks is a worker for saving sorted data to disk.
+// It serializes each item in chunks using the toBytes function and handles
+// any serialization errors by wrapping them in SerializationError instances.
 func (s *GenericSorter[E]) saveChunks() (err error) {
 	scratchPtr := s.pools.scratchPool.Get().(*[]byte)
 	scratch := *scratchPtr
-	defer func() {
-		s.pools.scratchPool.Put(scratchPtr)
-		// Recover from panics in ToBytes() calls
-		if r := recover(); r != nil {
-			err = NewSerializationError(r, "saveChunks")
-		}
-	}()
 
 	for {
 		select {
@@ -320,7 +317,11 @@ func (s *GenericSorter[E]) saveChunks() (err error) {
 			if more {
 				for _, d := range b.data {
 					// binary encoding for size
-					raw := s.toBytes(d)
+					raw, err := s.toBytes(d)
+					if err != nil {
+						s.putChunk(b) // Return chunk to pool on error
+						return NewSerializationError(err, "saveChunks")
+					}
 					n := binary.PutUvarint(scratch, uint64(len(raw)))
 					_, err = s.tempWriter.Write(scratch[:n])
 					if err != nil {
@@ -640,8 +641,9 @@ type mergeFile[E any] struct {
 	reader    *bufio.Reader
 }
 
-// getNext returns the next value from the sorted chunk on disk
-// the first call will return nil while the struct is initialized
+// getNext returns the next value from the sorted chunk on disk.
+// The first call will return nil while the struct is initialized.
+// It handles deserialization errors by wrapping them in DeserializationError instances.
 func (m *mergeFile[E]) getNext() (E, bool, error) {
 	var newRecBytes []byte
 	old := m.nextRec
@@ -658,13 +660,10 @@ func (m *mergeFile[E]) getNext() (E, bool, error) {
 		return old, false, err
 	}
 
-	// Recover from panics in fromBytes() calls
-	defer func() {
-		if r := recover(); r != nil {
-			err = NewDeserializationError(r, len(newRecBytes), "getNext")
-		}
-	}()
+	m.nextRec, err = m.fromBytes(newRecBytes)
+	if err != nil {
+		return old, true, NewDeserializationError(err, len(newRecBytes), "getNext")
+	}
 
-	m.nextRec = m.fromBytes(newRecBytes)
-	return old, true, err
+	return old, true, nil
 }

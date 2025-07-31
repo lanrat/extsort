@@ -11,14 +11,16 @@ type StringSorter struct {
 
 // fromBytesString converts a byte slice back to a string.
 // This is used for deserialization during the external sort process.
-func fromBytesString(d []byte) string {
-	return string(d)
+// Always succeeds and returns nil error.
+func fromBytesString(d []byte) (string, error) {
+	return string(d), nil
 }
 
 // toBytesString converts a string to a byte slice for serialization.
 // This enables strings to be written to and read from temporary files during sorting.
-func toBytesString(s string) []byte {
-	return []byte(s)
+// Always succeeds and returns nil error.
+func toBytesString(s string) ([]byte, error) {
+	return []byte(s), nil
 }
 
 // Strings performs external sorting on a channel of strings using lexicographic ordering.

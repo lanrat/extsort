@@ -309,15 +309,15 @@ func generateRandomStringInts(size int) []string {
 	return data
 }
 
-func intFromBytes(b []byte) int {
+func intFromBytes(b []byte) (int, error) {
 	if len(b) < 8 {
-		return 0
+		return 0, nil
 	}
-	return int(binary.LittleEndian.Uint64(b))
+	return int(binary.LittleEndian.Uint64(b)), nil
 }
 
-func intToBytes(i int) []byte {
+func intToBytes(i int) ([]byte, error) {
 	b := make([]byte, 8)
 	binary.LittleEndian.PutUint64(b, uint64(i))
-	return b
+	return b, nil
 }

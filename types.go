@@ -15,15 +15,17 @@ type Sorter interface {
 
 // FromBytesGeneric is a function type for deserializing bytes back to type E.
 // It's used during the merge phase to reconstruct items from temporary storage.
-// The function should be the inverse of the corresponding ToBytesGeneric function,
-// and must handle any errors by panicking (which will be caught and wrapped).
-type FromBytesGeneric[E any] func([]byte) E
+// The function should be the inverse of the corresponding ToBytesGeneric function.
+// It returns an error for any deserialization failures, which will be wrapped
+// in a DeserializationError by the external sorter.
+type FromBytesGeneric[E any] func([]byte) (E, error)
 
 // ToBytesGeneric is a function type for serializing type E to bytes.
 // It's used during chunk saving to store items in temporary files.
 // The function should produce deterministic output that can be read back
-// by the corresponding FromBytesGeneric function, and must handle any errors by panicking.
-type ToBytesGeneric[E any] func(E) []byte
+// by the corresponding FromBytesGeneric function. It returns an error for any
+// serialization failures, which will be wrapped in a SerializationError by the external sorter.
+type ToBytesGeneric[E any] func(E) ([]byte, error)
 
 // CompareGeneric is a function type for comparing two items of type E.
 // It must implement a strict weak ordering: reflexivity, antisymmetry, and transitivity.

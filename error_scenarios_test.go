@@ -18,9 +18,13 @@ func TestSerializationError(t *testing.T) {
 	for i := 0; i < 4; i++ {
 		inputChan <- val{Key: i, Order: i}
 	}
-	inputChan <- &errorVal{shouldFail: true} // This will fail ToBytes()
+	errorItem := &errorVal{shouldFail: true}
+	t.Logf("Adding errorVal with shouldFail=true: %+v", errorItem)
+	inputChan <- errorItem // This will fail ToBytes()
 	close(inputChan)
 
+	// Force multiple chunks to trigger serialization
+	config := &extsort.Config{ChunkSize: 1}
 	sort, outChan, errChan := extsort.New(inputChan, fromBytesForTest, func(a, b extsort.SortType) bool {
 		// Handle mixed types safely
 		av, aok := a.(val)
@@ -29,14 +33,18 @@ func TestSerializationError(t *testing.T) {
 			return av.Key < bv.Key
 		}
 		return false // Fallback for error types
-	}, nil)
+	}, config)
 
 	sort.Sort(context.Background())
 
-	// Drain output
-	for range outChan {
+	// Drain output and count results
+	resultCount := 0
+	for result := range outChan {
+		resultCount++
+		t.Logf("Output %d: %T = %+v", resultCount, result, result)
 		// Consume output
 	}
+	t.Logf("Got %d results from output channel", resultCount)
 
 	// Should now get a proper error instead of panic
 	if err := <-errChan; err != nil {

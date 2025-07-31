@@ -28,8 +28,32 @@ type SortTypeSorter struct {
 
 // sortTypeToBytes converts a SortType to bytes by calling its ToBytes method.
 // This adapter function enables SortType interface compatibility with the generic sorter.
-func sortTypeToBytes(a SortType) []byte {
-	return a.ToBytes()
+// It catches any panics from the ToBytes method and converts them to SerializationError instances,
+// allowing for graceful error handling instead of crashing the program.
+func sortTypeToBytes(a SortType) (result []byte, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			result = nil
+			err = NewSerializationError(r, "ToBytes")
+		}
+	}()
+	result = a.ToBytes()
+	return result, err
+}
+
+// makeSortTypeFromBytes creates a generic-compatible deserialization function from a legacy FromBytes function.
+// It wraps the legacy function to catch any panics and convert them to DeserializationError instances,
+// enabling graceful error handling during the merge phase of external sorting.
+func makeSortTypeFromBytes(fromBytes FromBytes) func([]byte) (SortType, error) {
+	return func(d []byte) (SortType, error) {
+		var err error
+		defer func() {
+			if r := recover(); r != nil {
+				err = NewDeserializationError(r, len(d), "FromBytes")
+			}
+		}()
+		return fromBytes(d), err
+	}
 }
 
 func makeCompareSortType(lessFunc CompareLessFunc) func(a, b SortType) int {
@@ -49,7 +73,7 @@ func makeCompareSortType(lessFunc CompareLessFunc) func(a, b SortType) int {
 // Deprecated: Use Generic() instead for new code. This function is maintained for backward compatibility.
 func New(input <-chan SortType, fromBytes FromBytes, lessFunc CompareLessFunc, config *Config) (*SortTypeSorter, <-chan SortType, <-chan error) {
 	// Convert legacy types to generic types
-	fromBytesGeneric := FromBytesGeneric[SortType](fromBytes)
+	fromBytesGeneric := makeSortTypeFromBytes(fromBytes)
 	compareGeneric := makeCompareSortType(lessFunc)
 
 	genericSorter, output, errChan := Generic(input, fromBytesGeneric, sortTypeToBytes, compareGeneric, config)
@@ -65,7 +89,7 @@ func New(input <-chan SortType, fromBytes FromBytes, lessFunc CompareLessFunc, c
 // Deprecated: Use MockGeneric() instead for new code. This function is maintained for backward compatibility.
 func NewMock(input <-chan SortType, fromBytes FromBytes, lessFunc CompareLessFunc, config *Config, n int) (*SortTypeSorter, <-chan SortType, <-chan error) {
 	// Convert legacy types to generic types
-	fromBytesGeneric := FromBytesGeneric[SortType](fromBytes)
+	fromBytesGeneric := makeSortTypeFromBytes(fromBytes)
 	compareGeneric := makeCompareSortType(lessFunc)
 
 	genericSorter, output, errChan := MockGeneric(input, fromBytesGeneric, sortTypeToBytes, compareGeneric, config, n)

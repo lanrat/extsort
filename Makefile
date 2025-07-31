@@ -9,7 +9,7 @@ ALL_SOURCES := $(shell find . -type f -name '*.go')
 .PHONY: fmt lint test cover coverhtml examples readme
 
 test:
-	go test -timeout=90s -v ./...
+	go test -timeout=90s $(shell go list ./... | grep -v "/examples")
 	@echo "< ALL TESTS PASS >"
 
 update-deps: go.mod

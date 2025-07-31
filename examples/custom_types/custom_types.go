@@ -14,25 +14,19 @@ type Person struct {
 	Age  int
 }
 
-func personToBytes(p Person) []byte {
+func personToBytes(p Person) ([]byte, error) {
 	var buf bytes.Buffer
 	enc := gob.NewEncoder(&buf)
 	err := enc.Encode(p)
-	if err != nil {
-		panic(err)
-	}
-	return buf.Bytes()
+	return buf.Bytes(), err
 }
 
-func personFromBytes(data []byte) Person {
+func personFromBytes(data []byte) (Person, error) {
 	var p Person
 	buf := bytes.NewReader(data)
 	dec := gob.NewDecoder(buf)
 	err := dec.Decode(&p)
-	if err != nil {
-		panic(err)
-	}
-	return p
+	return p, err
 }
 
 func comparePersonsByAge(a, b Person) int {
