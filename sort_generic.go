@@ -256,8 +256,13 @@ func (s *GenericSorter[E]) buildChunks() error {
 			break
 		}
 
+		select {
 		// chunk is now full
-		s.chunkChan <- c
+		case s.chunkChan <- c:
+		case <-s.buildSortCtx.Done():
+			s.putChunk(c) // Return unused chunk to pool
+			return s.buildSortCtx.Err()
+		}
 	}
 
 	return nil
@@ -345,19 +350,31 @@ func (s *GenericSorter[E]) outputSingleChunk(ctx context.Context) {
 // For single chunk: stores it in memory to avoid disk I/O
 // For multiple chunks: saves all chunks to disk normally
 func (s *GenericSorter[E]) saveChunksOptimized() error {
-	// Get the first chunk
-	firstChunk, ok := <-s.saveChunkChan
-	if !ok {
-		// No chunks at all
-		return nil
+	// Get the first chunk with context checking
+	var firstChunk *genericChunk[E]
+	var ok bool
+	select {
+	case firstChunk, ok = <-s.saveChunkChan:
+		if !ok {
+			// Channel closed, no chunks at all
+			return nil
+		}
+	case <-s.saveCtx.Done():
+		return s.saveCtx.Err()
 	}
 
-	// Try to get a second chunk
-	secondChunk, ok := <-s.saveChunkChan
-	if !ok {
-		// Only one chunk - single chunk optimization
-		s.singleChunk = firstChunk
-		return nil
+	// Try to get a second chunk with context checking
+	var secondChunk *genericChunk[E]
+	select {
+	case secondChunk, ok = <-s.saveChunkChan:
+		if !ok {
+			// Channel closed after first chunk - single chunk optimization
+			s.singleChunk = firstChunk
+			return nil
+		}
+	case <-s.saveCtx.Done():
+		s.putChunk(firstChunk) // Return to pool before exiting
+		return s.saveCtx.Err()
 	}
 
 	// We have at least 2 chunks - use multi-chunk path
@@ -372,17 +389,24 @@ func (s *GenericSorter[E]) saveChunksOptimized() error {
 		return err
 	}
 
-	// Continue saving any remaining chunks
-	for chunk := range s.saveChunkChan {
-		if err := s.saveChunk(chunk); err != nil {
-			return err
+	// Continue saving any remaining chunks with context checking
+	for {
+		select {
+		case chunk, ok := <-s.saveChunkChan:
+			if !ok {
+				// Channel closed, we're done
+				// Finalize the temp writer and save it for reading
+				var err error
+				s.tempReader, err = s.tempWriter.Save()
+				return err
+			}
+			if err := s.saveChunk(chunk); err != nil {
+				return err
+			}
+		case <-s.saveCtx.Done():
+			return s.saveCtx.Err()
 		}
 	}
-
-	// Finalize the temp writer and save it for reading
-	var err error
-	s.tempReader, err = s.tempWriter.Save()
-	return err
 }
 
 // saveChunk processes a single chunk
