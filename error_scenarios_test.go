@@ -12,19 +12,20 @@ import (
 
 // TestSerializationError tests handling of ToBytes() failures
 func TestSerializationError(t *testing.T) {
-	inputChan := make(chan extsort.SortType, 5)
+	inputChan := make(chan extsort.SortType, 10)
 
-	// Add some normal elements and one that will fail serialization
-	for i := 0; i < 4; i++ {
+	// Add more items to ensure multi-chunk behavior
+	for i := 0; i < 8; i++ {
 		inputChan <- val{Key: i, Order: i}
 	}
 	errorItem := &errorVal{shouldFail: true}
 	t.Logf("Adding errorVal with shouldFail=true: %+v", errorItem)
-	inputChan <- errorItem // This will fail ToBytes()
+	inputChan <- errorItem             // This will fail ToBytes()
+	inputChan <- val{Key: 9, Order: 9} // Add one more after error
 	close(inputChan)
 
 	// Force multiple chunks to trigger serialization
-	config := &extsort.Config{ChunkSize: 1}
+	config := &extsort.Config{ChunkSize: 3} // Create multiple chunks
 	sort, outChan, errChan := extsort.New(inputChan, fromBytesForTest, func(a, b extsort.SortType) bool {
 		// Handle mixed types safely
 		av, aok := a.(val)

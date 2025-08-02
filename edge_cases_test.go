@@ -1,7 +1,9 @@
 package extsort_test
 
 import (
+	"cmp"
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -154,9 +156,8 @@ func TestInvalidConfiguration(t *testing.T) {
 
 	// Test with invalid config values
 	config := extsort.DefaultConfig()
-	config.ChunkSize = 0       // Invalid
-	config.NumWorkers = 0      // Invalid
-	config.NumMergeWorkers = 0 // Invalid
+	config.ChunkSize = 0  // Invalid
+	config.NumWorkers = 0 // Invalid
 
 	sort, outChan, errChan := extsort.New(inputChan, fromBytesForTest, KeyLessThan, config)
 	sort.Sort(context.Background())
@@ -371,9 +372,8 @@ func TestExtremeParallelism(t *testing.T) {
 	close(inputChan)
 
 	config := extsort.DefaultConfig()
-	config.NumWorkers = 10     // High worker count
-	config.NumMergeWorkers = 8 // High merge worker count
-	config.ChunkSize = 5       // Small chunks to force parallelism
+	config.NumWorkers = 10 // High worker count
+	config.ChunkSize = 5   // Small chunks to force parallelism
 
 	sort, outChan, errChan := extsort.New(inputChan, fromBytesForTest, KeyLessThan, config)
 	sort.Sort(context.Background())
@@ -394,5 +394,51 @@ func TestExtremeParallelism(t *testing.T) {
 	// Verify sorted
 	if !IsSorted(results, KeyLessThan) {
 		t.Fatal("results not sorted with extreme parallelism")
+	}
+}
+
+// TestSingleChunkDoesNotSerialize tests single-chunk optimization ensuring that single chunks do not get serialized.
+func TestSingleChunkDoesNotSerialize(t *testing.T) {
+	dataLen := 10
+	// create input
+	inputChan := make(chan int, dataLen)
+	for i := 0; i < dataLen; i++ {
+		inputChan <- i
+	}
+	close(inputChan)
+
+	config := extsort.DefaultConfig()
+	config.ChunkSize = dataLen + 2 // force larger than number of items
+
+	fromBytes := func(data []byte) (int, error) {
+		return 0, fmt.Errorf("fromBytes should not be called for single chunk")
+	}
+
+	toBytes := func(item int) ([]byte, error) {
+		return nil, fmt.Errorf("toBytes should not be called for single chunk")
+	}
+
+	sort, outChan, errChan := extsort.Generic(inputChan, fromBytes, toBytes, cmp.Compare[int], config)
+	sort.Sort(context.Background())
+
+	var results []int
+	for rec := range outChan {
+		results = append(results, rec)
+	}
+
+	if len(results) != dataLen {
+		t.Fatalf("expected %d results, got %d", dataLen, len(results))
+	}
+
+	prior := results[0]
+	for _, rec := range results {
+		if prior > rec {
+			t.Fatalf("Unordered response: %d should be less than %d", prior, rec)
+		}
+		prior = rec
+	}
+
+	if err := <-errChan; err != nil {
+		t.Fatalf("Test failed: %s", err.Error())
 	}
 }

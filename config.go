@@ -9,14 +9,9 @@ type Config struct {
 	ChunkSize int
 
 	// NumWorkers controls the maximum number of goroutines used for parallel
-	// chunk sorting. More workers can improve CPU utilization on multi-core systems.
+	// chunk sorting and merging. More workers can improve CPU utilization on multi-core systems.
 	// Default: 2 workers. Must be > 1.
 	NumWorkers int
-
-	// NumMergeWorkers controls the maximum number of goroutines used for parallel
-	// chunk merging. More workers can improve I/O throughput when merging many chunks.
-	// Default: 2 workers. Must be > 1.
-	NumMergeWorkers int
 
 	// ChanBuffSize sets the buffer size for internal channels used during chunk merging.
 	// Larger buffers can improve throughput but use more memory.
@@ -41,7 +36,6 @@ func DefaultConfig() *Config {
 	return &Config{
 		ChunkSize:          int(1e6), // 1M
 		NumWorkers:         2,
-		NumMergeWorkers:    2,
 		ChanBuffSize:       1,
 		SortedChanBuffSize: 1000,
 		TempFilesDir:       "",
@@ -56,14 +50,11 @@ func mergeConfig(c *Config) *Config {
 	if c == nil {
 		return d
 	}
-	if c.ChunkSize <= 1 {
+	if c.ChunkSize < 1 {
 		c.ChunkSize = d.ChunkSize
 	}
-	if c.NumWorkers <= 1 {
+	if c.NumWorkers < 1 {
 		c.NumWorkers = d.NumWorkers
-	}
-	if c.NumMergeWorkers <= 1 {
-		c.NumMergeWorkers = d.NumMergeWorkers
 	}
 	if c.ChanBuffSize < 0 {
 		c.ChanBuffSize = d.ChanBuffSize

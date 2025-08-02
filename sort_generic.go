@@ -74,6 +74,7 @@ type GenericSorter[E any] struct {
 	fromBytes      FromBytesGeneric[E]
 	toBytes        ToBytesGeneric[E]
 	pools          *memoryPools
+	singleChunk    *genericChunk[E] // Holds the single chunk for optimization
 }
 
 // newSorter creates a new GenericSorter instance with the given configuration.
@@ -88,7 +89,7 @@ func newSorter[E any](input <-chan E, fromBytes FromBytesGeneric[E], toBytes ToB
 		toBytes:        toBytes,
 		config:         *config,
 		chunkChan:      make(chan *genericChunk[E], config.ChanBuffSize),
-		saveChunkChan:  make(chan *genericChunk[E], config.ChanBuffSize),
+		saveChunkChan:  make(chan *genericChunk[E], config.NumWorkers*2), // Buffer for workers to avoid deadlock
 		mergeChunkChan: make(chan E, config.SortedChanBuffSize),
 		mergeErrChan:   make(chan error, 1),
 	}
@@ -196,10 +197,8 @@ func (s *GenericSorter[E]) Sort(ctx context.Context) {
 		buildSortErrGroup.Go(s.sortChunks)
 	}
 
-	// TODO detect a single chunk and don't save it to disk
-
-	// save chunks
-	saveErrGroup.Go(s.saveChunks)
+	// Start the save worker that will handle single-chunk optimization
+	saveErrGroup.Go(s.saveChunksOptimized)
 
 	err := buildSortErrGroup.Wait()
 	if err != nil {
@@ -209,8 +208,10 @@ func (s *GenericSorter[E]) Sort(ctx context.Context) {
 		return
 	}
 
-	// need to close saveChunkChan
+	// Close saveChunkChan to signal end of chunks
 	close(s.saveChunkChan)
+
+	// Wait for save worker to complete
 	err = saveErrGroup.Wait()
 	if err != nil {
 		s.mergeErrChan <- err
@@ -219,7 +220,14 @@ func (s *GenericSorter[E]) Sort(ctx context.Context) {
 		return
 	}
 
-	// read chunks and merge
+	// Check if single chunk optimization was used
+	if s.singleChunk != nil {
+		// Single chunk case - output directly
+		go s.outputSingleChunk(ctx)
+		return
+	}
+
+	// Multiple chunks: read chunks and merge
 	// if this errors, it is returned in the errorChan
 	go s.mergeNChunks(ctx)
 }
@@ -304,57 +312,113 @@ func (s *GenericSorter[E]) sortChunks() error {
 	}
 }
 
-// saveChunks is a worker for saving sorted data to disk.
-// It serializes each item in chunks using the toBytes function and handles
-// any serialization errors by wrapping them in SerializationError instances.
-func (s *GenericSorter[E]) saveChunks() (err error) {
-	scratchPtr := s.pools.scratchPool.Get().(*[]byte)
-	scratch := *scratchPtr
+// outputSingleChunk handles the single-chunk optimization by directly outputting
+// the sorted chunk without any disk I/O. This provides significant performance
+// benefits for small datasets that fit entirely in memory.
+func (s *GenericSorter[E]) outputSingleChunk(ctx context.Context) {
+	defer close(s.mergeChunkChan)
+	defer close(s.mergeErrChan)
 
-	for {
+	// Use the chunk collected by collectSingleChunk
+	chunk := s.singleChunk
+	if chunk == nil {
+		// No chunk collected - this shouldn't happen but handle gracefully
+		return
+	}
+
+	// Output each item in the sorted chunk directly
+	for _, item := range chunk.data {
 		select {
-		case b, more := <-s.saveChunkChan:
-			if more {
-				for _, d := range b.data {
-					// binary encoding for size
-					raw, err := s.toBytes(d)
-					if err != nil {
-						s.putChunk(b) // Return chunk to pool on error
-						return NewSerializationError(err, "saveChunks")
-					}
-					n := binary.PutUvarint(scratch, uint64(len(raw)))
-					_, err = s.tempWriter.Write(scratch[:n])
-					if err != nil {
-						s.putChunk(b) // Return chunk to pool on error
-						return NewDiskError(err, "write size header", "")
-					}
-					// add data
-					_, err = s.tempWriter.Write(raw)
-					if err != nil {
-						s.putChunk(b) // Return chunk to pool on error
-						return NewDiskError(err, "write data", "")
-					}
-				}
-				_, err = s.tempWriter.Next()
-				if err != nil {
-					s.putChunk(b) // Return chunk to pool on error
-					return NewDiskError(err, "next chunk", "")
-				}
-				// Successfully processed chunk, return to pool
-				s.putChunk(b)
-			} else {
-				s.tempReader, err = s.tempWriter.Save()
-				if err != nil {
-					return NewDiskError(err, "save temp file", "")
-				}
-				return nil
-			}
-		case <-s.saveCtx.Done():
-			// delete the temp file from disk
-			_ = s.tempWriter.Close() // ignore error on cleanup
-			return s.saveCtx.Err()
+		case s.mergeChunkChan <- item:
+		case <-ctx.Done():
+			s.mergeErrChan <- ctx.Err()
+			return
 		}
 	}
+
+	// Return chunk to pool
+	s.putChunk(chunk)
+	s.singleChunk = nil // Clear reference
+}
+
+// saveChunksOptimized handles both single-chunk and multi-chunk cases
+// For single chunk: stores it in memory to avoid disk I/O
+// For multiple chunks: saves all chunks to disk normally
+func (s *GenericSorter[E]) saveChunksOptimized() error {
+	// Get the first chunk
+	firstChunk, ok := <-s.saveChunkChan
+	if !ok {
+		// No chunks at all
+		return nil
+	}
+
+	// Try to get a second chunk
+	secondChunk, ok := <-s.saveChunkChan
+	if !ok {
+		// Only one chunk - single chunk optimization
+		s.singleChunk = firstChunk
+		return nil
+	}
+
+	// We have at least 2 chunks - use multi-chunk path
+	// Save the first chunk
+	if err := s.saveChunk(firstChunk); err != nil {
+		s.putChunk(secondChunk) // Return to pool
+		return err
+	}
+
+	// Save the second chunk
+	if err := s.saveChunk(secondChunk); err != nil {
+		return err
+	}
+
+	// Continue saving any remaining chunks
+	for chunk := range s.saveChunkChan {
+		if err := s.saveChunk(chunk); err != nil {
+			return err
+		}
+	}
+
+	// Finalize the temp writer and save it for reading
+	var err error
+	s.tempReader, err = s.tempWriter.Save()
+	return err
+}
+
+// saveChunk processes a single chunk
+func (s *GenericSorter[E]) saveChunk(b *genericChunk[E]) error {
+	scratchPtr := s.pools.scratchPool.Get().(*[]byte)
+	scratch := *scratchPtr
+	defer s.pools.scratchPool.Put(scratchPtr)
+
+	for _, d := range b.data {
+		// binary encoding for size
+		raw, err := s.toBytes(d)
+		if err != nil {
+			s.putChunk(b) // Return chunk to pool on error
+			return NewSerializationError(err, "saveChunk")
+		}
+		n := binary.PutUvarint(scratch, uint64(len(raw)))
+		_, err = s.tempWriter.Write(scratch[:n])
+		if err != nil {
+			s.putChunk(b) // Return chunk to pool on error
+			return NewDiskError(err, "write size header", "")
+		}
+		// add data
+		_, err = s.tempWriter.Write(raw)
+		if err != nil {
+			s.putChunk(b) // Return chunk to pool on error
+			return NewDiskError(err, "write data", "")
+		}
+	}
+	_, err := s.tempWriter.Next()
+	if err != nil {
+		s.putChunk(b) // Return chunk to pool on error
+		return NewDiskError(err, "next chunk", "")
+	}
+	// Successfully processed chunk, return to pool
+	s.putChunk(b)
+	return nil
 }
 
 // mergeNChunks runs asynchronously in the background feeding data to getNext
@@ -386,7 +450,7 @@ func (s *GenericSorter[E]) mergeNChunks(ctx context.Context) {
 	}
 
 	// For small number of chunks, use single-threaded merge
-	if numChunks <= s.config.NumMergeWorkers {
+	if numChunks <= s.config.NumWorkers {
 		s.mergeNChunksSingleThreaded(ctx)
 		return
 	}
@@ -442,7 +506,7 @@ func (s *GenericSorter[E]) mergeNChunksSingleThreaded(ctx context.Context) {
 // mergeNChunksParallel implements parallel k-way merging with robust cancellation
 func (s *GenericSorter[E]) mergeNChunksParallel(ctx context.Context) {
 	numChunks := s.tempReader.Size()
-	numWorkers := s.config.NumMergeWorkers
+	numWorkers := s.config.NumWorkers
 
 	// Create a cancellable context for all merge operations
 	mergeCtx, mergeCancel := context.WithCancel(ctx)
@@ -488,8 +552,11 @@ func (s *GenericSorter[E]) mergeNChunksParallel(ctx context.Context) {
 		}(i, startChunk, endChunk)
 	}
 
-	// Start error collector
+	// Start error collector with wait group for synchronization
+	var errorCollectorWg sync.WaitGroup
+	errorCollectorWg.Add(1)
 	go func() {
+		defer errorCollectorWg.Done()
 		for err := range errChan {
 			if err != nil {
 				errOnce.Do(func() {
@@ -516,7 +583,10 @@ func (s *GenericSorter[E]) mergeNChunksParallel(ctx context.Context) {
 
 	close(errChan) // Signal error collector to stop
 
-	// Send any collected error
+	// Wait for error collector to finish processing all errors
+	errorCollectorWg.Wait()
+
+	// Send any collected error (now safe to read mergeErr)
 	if mergeErr != nil {
 		s.mergeErrChan <- mergeErr
 	} else if ctx.Err() != nil {

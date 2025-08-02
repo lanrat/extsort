@@ -182,8 +182,7 @@ Customize sorting behavior with the Config struct:
 ```go
 config := &extsort.Config{
     ChunkSize:          500000,  // Records per chunk (default: 1M)
-    NumWorkers:         4,       // Parallel sorting workers (default: 2)
-    NumMergeWorkers:    4,       // Parallel merging workers (default: 2)
+    NumWorkers:         4,       // Parallel sorting/merging workers (default: 2)
     ChanBuffSize:       10,      // Channel buffer size (default: 1)
     SortedChanBuffSize: 1000,    // Output channel buffer (default: 1000)
     TempFilesDir:       "/tmp",  // Temporary files directory (default: OS temp)
@@ -456,7 +455,7 @@ func main() {
 ## Performance Considerations
 
 - **Memory Usage**: Configure `ChunkSize` based on available memory (larger chunks = less I/O, more memory)
-- **Parallelism**: Increase `NumWorkers` and `NumMergeWorkers` on multi-core systems
+- **Parallelism**: Increase `NumWorkers` on multi-core systems
 - **I/O Performance**: Use fast storage for `TempFilesDir` (SSD recommended for large datasets)
 - **Channel Buffers**: Tune buffer sizes based on your producer/consumer patterns
 

@@ -12,16 +12,19 @@ import (
 
 // TestGenericSerializationError tests serialization error handling in the Generic API
 func TestGenericSerializationError(t *testing.T) {
-	inputChan := make(chan *GenericErrorItem, 3)
+	inputChan := make(chan *GenericErrorItem, 6)
 
-	// Add normal items and one that will fail serialization
+	// Add more items to ensure multi-chunk behavior
 	inputChan <- &GenericErrorItem{Key: 1, ShouldFailSerialization: false}
 	inputChan <- &GenericErrorItem{Key: 2, ShouldFailSerialization: true} // This will fail
 	inputChan <- &GenericErrorItem{Key: 3, ShouldFailSerialization: false}
+	inputChan <- &GenericErrorItem{Key: 4, ShouldFailSerialization: false}
+	inputChan <- &GenericErrorItem{Key: 5, ShouldFailSerialization: false}
+	inputChan <- &GenericErrorItem{Key: 6, ShouldFailSerialization: false}
 	close(inputChan)
 
-	// Use small chunk size to force serialization
-	config := &extsort.Config{ChunkSize: 1}
+	// Use small chunk size to force multiple chunks
+	config := &extsort.Config{ChunkSize: 2} // Create 3 chunks
 
 	sort, outChan, errChan := extsort.Generic(
 		inputChan,
@@ -59,14 +62,20 @@ func TestGenericSerializationError(t *testing.T) {
 
 // TestGenericDeserializationError tests deserialization error handling in the Generic API
 func TestGenericDeserializationError(t *testing.T) {
-	inputChan := make(chan *GenericErrorItem, 2)
+	inputChan := make(chan *GenericErrorItem, 5)
 
-	// Add items that will serialize fine but fail on deserialization
+	// Add more items to force multi-chunk and trigger deserialization
 	inputChan <- &GenericErrorItem{Key: 1, ShouldFailSerialization: false}
 	inputChan <- &GenericErrorItem{Key: 2, ShouldFailSerialization: false}
+	inputChan <- &GenericErrorItem{Key: 3, ShouldFailSerialization: false}
+	inputChan <- &GenericErrorItem{Key: 4, ShouldFailSerialization: false}
+	inputChan <- &GenericErrorItem{Key: 5, ShouldFailSerialization: false}
 	close(inputChan)
 
-	config := &extsort.Config{ChunkSize: 1}
+	config := &extsort.Config{
+		ChunkSize:  2, // Force 3 chunks
+		NumWorkers: 1, // Single worker to avoid race conditions
+	}
 
 	sort, outChan, errChan := extsort.Generic(
 		inputChan,
@@ -129,15 +138,18 @@ func TestOrderedSerializationError(t *testing.T) {
 
 // TestGenericErrorPropagation tests that errors are properly propagated through all phases
 func TestGenericErrorPropagation(t *testing.T) {
-	inputChan := make(chan *GenericErrorItem, 3)
+	inputChan := make(chan *GenericErrorItem, 5)
 
-	// Simpler test to avoid deadlocks - fewer items, predictable failure
+	// Add more items to force multi-chunk behavior
 	inputChan <- &GenericErrorItem{Key: 1, ShouldFailSerialization: false}
 	inputChan <- &GenericErrorItem{Key: 2, ShouldFailSerialization: true} // This will fail
+	inputChan <- &GenericErrorItem{Key: 3, ShouldFailSerialization: false}
+	inputChan <- &GenericErrorItem{Key: 4, ShouldFailSerialization: false}
+	inputChan <- &GenericErrorItem{Key: 5, ShouldFailSerialization: false}
 	close(inputChan)
 
 	config := &extsort.Config{
-		ChunkSize:  1, // Each item in its own chunk
+		ChunkSize:  2, // Force multiple chunks
 		NumWorkers: 1, // Single worker to avoid race conditions in this test
 	}
 
@@ -164,8 +176,8 @@ func TestGenericErrorPropagation(t *testing.T) {
 	}
 
 	// Should be a wrapped SerializationError
-	if !strings.Contains(err.Error(), "saveChunks") {
-		t.Errorf("Expected error to mention 'saveChunks', got: %v", err)
+	if !strings.Contains(err.Error(), "saveChunk") {
+		t.Errorf("Expected error to mention 'saveChunk', got: %v", err)
 	}
 
 	t.Logf("Error properly propagated through phases: %v", err)

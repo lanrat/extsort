@@ -124,8 +124,8 @@ func TestDeadLockContextCancelDeterministic(t *testing.T) {
 func TestParallelMerging(t *testing.T) {
 	inputChan := make(chan extsort.SortType, 100)
 	config := extsort.DefaultConfig()
-	config.ChunkSize = 5       // Small chunks to force many chunks
-	config.NumMergeWorkers = 3 // Force parallel merging
+	config.ChunkSize = 5  // Small chunks to force many chunks
+	config.NumWorkers = 3 // Force parallel merging
 
 	// Add enough data to trigger parallel merging (more chunks than merge workers)
 	for i := 0; i < 20; i++ {
