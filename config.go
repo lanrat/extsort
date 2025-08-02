@@ -36,7 +36,7 @@ func DefaultConfig() *Config {
 	return &Config{
 		ChunkSize:          int(1e6), // 1M
 		NumWorkers:         2,
-		ChanBuffSize:       2,
+		ChanBuffSize:       16,
 		SortedChanBuffSize: 1000,
 		TempFilesDir:       "",
 	}
