@@ -75,7 +75,12 @@ func TestDirectoryReferenceCountingCleanup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create test base dir: %v", err)
 	}
-	defer os.RemoveAll(baseDir)
+	defer func() {
+		err := os.RemoveAll(baseDir)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}()
 
 	// Create a subdirectory that matches our process-specific pattern
 	// This simulates what would happen in the fallback case
