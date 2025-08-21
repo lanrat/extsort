@@ -2,7 +2,6 @@ package tempfile_test
 
 import (
 	"os"
-	"path/filepath"
 	"runtime"
 	"testing"
 
@@ -14,7 +13,7 @@ import (
 func TestRobustCleanup(t *testing.T) {
 	// Test normal cleanup path
 	t.Run("NormalCleanup", func(t *testing.T) {
-		writer, err := tempfile.New("")
+		writer, err := tempfile.New("", true)
 		if err != nil {
 			t.Fatalf("Failed to create temp file: %v", err)
 		}
@@ -62,7 +61,7 @@ func TestRobustCleanup(t *testing.T) {
 
 	// Test cleanup when writer is closed directly (abort case)
 	t.Run("WriterAbortCleanup", func(t *testing.T) {
-		writer, err := tempfile.New("")
+		writer, err := tempfile.New("", true)
 		if err != nil {
 			t.Fatalf("Failed to create temp file: %v", err)
 		}
@@ -89,40 +88,27 @@ func TestRobustCleanup(t *testing.T) {
 	})
 }
 
-// TestCleanupBehaviorDifferences documents the platform differences
+// TestCleanupBehaviorDifferences verifies platform-specific cleanup behavior
 func TestCleanupBehaviorDifferences(t *testing.T) {
-	writer, err := tempfile.New("")
+	writer, err := tempfile.New("", true)
 	if err != nil {
 		t.Fatalf("Failed to create temp file: %v", err)
 	}
 
 	filename := writer.Name()
-	tempDir := filepath.Dir(filename)
 
 	// Check if file exists initially
 	_, err = os.Stat(filename)
 	initialExists := err == nil
 
-	t.Logf("Platform: %s", runtime.GOOS)
-	t.Logf("Temp file: %s", filename)
-	t.Logf("Temp dir: %s", tempDir)
-	t.Logf("File exists after creation: %t", initialExists)
-
-	if runtime.GOOS != "windows" {
-		// On Unix, file should be unlinked immediately, so stat should fail
-		if initialExists {
-			t.Logf("NOTE: File still visible after creation (expected on some systems)")
-		} else {
-			t.Logf("File unlinked immediately after creation (Unix behavior)")
-		}
-	} else {
+	if runtime.GOOS == "windows" {
 		// On Windows, file should exist until explicitly closed
 		if !initialExists {
 			t.Errorf("Expected file to exist on Windows after creation")
-		} else {
-			t.Logf("File exists until close (Windows behavior)")
 		}
 	}
+	// On Unix, file may or may not be visible due to immediate unlinking
+	// This is implementation detail and both behaviors are acceptable
 
 	// Clean up
 	_ = writer.Close()

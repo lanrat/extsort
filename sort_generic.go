@@ -159,7 +159,7 @@ func (s *GenericSorter[E]) initMemoryPools() *memoryPools {
 func Generic[E any](input <-chan E, fromBytes FromBytesGeneric[E], toBytes ToBytesGeneric[E], compareFunc CompareGeneric[E], config *Config) (*GenericSorter[E], <-chan E, <-chan error) {
 	var err error
 	s := newSorter(input, fromBytes, toBytes, compareFunc, config)
-	s.tempWriter, err = tempfile.New(s.config.TempFilesDir)
+	s.tempWriter, err = tempfile.New(s.config.TempFilesDir, true)
 	if err != nil {
 		s.mergeErrChan <- err
 		close(s.mergeErrChan)
