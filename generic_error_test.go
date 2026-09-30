@@ -106,16 +106,17 @@ func TestGenericDeserializationError(t *testing.T) {
 	t.Logf("Successfully caught generic deserialization error: %v", err)
 }
 
-// TestOrderedSerializationError tests gob encoding errors in Ordered API
+// TestOrderedSerializationError tests the error path of the Ordered API
 func TestOrderedSerializationError(t *testing.T) {
-	// Note: It's hard to make gob encoding fail for basic types,
-	// so this test demonstrates the error handling path exists
+	// Note: the binary codec cannot fail to encode basic types,
+	// so this test checks that a sort through the codec reports no error
 	inputChan := make(chan int, 2)
 	inputChan <- 1
 	inputChan <- 2
 	close(inputChan)
 
-	sort, outChan, errChan := extsort.Ordered(inputChan, nil)
+	// One record per chunk, so the records go through the codec and disk
+	sort, outChan, errChan := extsort.Ordered(inputChan, &extsort.Config{ChunkSize: 1})
 	sort.Sort(context.Background())
 
 	// Should complete successfully since int is easily serializable
