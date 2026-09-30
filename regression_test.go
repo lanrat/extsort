@@ -628,3 +628,56 @@ func TestTempFileCreationErrorIsReportedOnErrChan(t *testing.T) {
 		}
 	})
 }
+
+// buildChunks used to keep looping up to ChunkSize times on the closed input,
+// because a plain break inside the select only left the select.
+func TestBuildChunksStopsWhenInputCloses(t *testing.T) {
+	in := make(chan struct{}, 1)
+	in <- struct{}{}
+	close(in)
+	// Chunks of struct{} need no memory, so a huge ChunkSize only costs loop iterations
+	s := newSorter(in,
+		func([]byte) (struct{}, error) { return struct{}{}, nil },
+		func(struct{}) ([]byte, error) { return nil, nil },
+		func(a, b struct{}) int { return 0 },
+		&Config{ChunkSize: 1 << 30, ChanBuffSize: 1})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel() // stops a spinning buildChunks once the test is over
+	s.sortCtx = ctx
+
+	done := make(chan error, 1)
+	go func() { done <- s.buildChunks() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("buildChunks still running 1s after the input closed")
+	}
+	if c := <-s.chunkChan; c == nil || len(c.data) != 1 {
+		t.Fatalf("got chunk %v, want one chunk with the record", c)
+	}
+	if _, ok := <-s.chunkChan; ok {
+		t.Error("buildChunks sent more than one chunk")
+	}
+}
+
+// BenchmarkSortTenRecords measures a small sort with the default config. The loop
+// on the closed input used to add about 2x ChunkSize (1M) iterations to every sort.
+func BenchmarkSortTenRecords(b *testing.B) {
+	for b.Loop() {
+		in := make(chan int, 10)
+		for i := 10; i > 0; i-- {
+			in <- i
+		}
+		close(in)
+		s, out, errc := Generic(in, atoiBytes, itoaBytes, cmp.Compare[int], nil)
+		s.Sort(context.Background())
+		for range out {
+		}
+		if err := <-errc; err != nil {
+			b.Fatal(err)
+		}
+	}
+}

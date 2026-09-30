@@ -265,13 +265,15 @@ func (s *GenericSorter[E]) closeTempFiles() {
 func (s *GenericSorter[E]) buildChunks() error {
 	defer close(s.chunkChan) // if this is not called on error, causes a deadlock
 
-	for {
+	for inputOpen := true; inputOpen; {
 		c := s.getChunk()
+	fill:
 		for i := 0; i < s.config.ChunkSize; i++ {
 			select {
 			case rec, ok := <-s.input:
 				if !ok {
-					break
+					inputOpen = false
+					break fill // a plain break would only leave the select
 				}
 				c.data = append(c.data, rec)
 			case <-s.sortCtx.Done():
@@ -286,7 +288,7 @@ func (s *GenericSorter[E]) buildChunks() error {
 		}
 
 		select {
-		// chunk is now full
+		// chunk is now full, or holds the last records
 		case s.chunkChan <- c:
 		case <-s.sortCtx.Done():
 			s.putChunk(c) // Return unused chunk to pool
