@@ -107,14 +107,16 @@ func (d *differ[T]) diff() (r Result, err error) {
 			}
 		}
 	}
-	// check for errors just in case
+	// check for errors just in case. Each error channel is read once: here if its
+	// stream has ended, otherwise after the stream is drained below.
+	aErrPending, bErrPending := okA, okB
 	if !okA {
-		if err = <-d.aErrChan; err != nil {
+		if err = d.readErr(d.aErrChan); err != nil {
 			return
 		}
 	}
 	if !okB {
-		if err = <-d.bErrChan; err != nil {
+		if err = d.readErr(d.bErrChan); err != nil {
 			return
 		}
 	}
@@ -132,9 +134,11 @@ func (d *differ[T]) diff() (r Result, err error) {
 			return r, d.ctx.Err()
 		}
 	}
-	// check for A errors once again
-	if err = <-d.aErrChan; err != nil {
-		return
+	// check for A errors if not read above
+	if aErrPending {
+		if err = d.readErr(d.aErrChan); err != nil {
+			return
+		}
 	}
 	// if only B has data left
 	for okB {
@@ -150,11 +154,24 @@ func (d *differ[T]) diff() (r Result, err error) {
 			return r, d.ctx.Err()
 		}
 	}
-	// check for B errors once again
-	if err = <-d.bErrChan; err != nil {
-		return
+	// check for B errors if not read above
+	if bErrPending {
+		if err = d.readErr(d.bErrChan); err != nil {
+			return
+		}
 	}
 	return
+}
+
+// readErr waits for the error from a stream whose data channel has closed.
+// It gives up when ctx is done, so an error channel that is never closed cannot hang the diff.
+func (d *differ[T]) readErr(errChan <-chan error) error {
+	select {
+	case err := <-errChan:
+		return err
+	case <-d.ctx.Done():
+		return d.ctx.Err()
+	}
 }
 
 // PrintDiff is a utility function that can be used as a ResultFunc to print
