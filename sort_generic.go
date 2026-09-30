@@ -16,6 +16,9 @@ import (
 )
 
 const (
+	// ctxCheckInterval is how many records a loop handles between checks of its context
+	// while a non-blocking receive keeps succeeding, since that path never selects on ctx.Done().
+	ctxCheckInterval = 1024
 	// mergeBatchSize is how many records a merge worker hands to the final merge at a time.
 	// Sending records one per channel operation made the handoffs cost more than the merge.
 	mergeBatchSize = 1024
@@ -272,17 +275,29 @@ func (s *GenericSorter[E]) buildChunks() error {
 		c := s.getChunk()
 	fill:
 		for i := 0; i < s.config.ChunkSize; i++ {
+			var rec E
+			var ok bool
+			// Try a non-blocking receive first: unlike the select below it does not lock
+			// the context's channel, so a steady input costs one channel operation per record
 			select {
-			case rec, ok := <-s.input:
-				if !ok {
-					inputOpen = false
-					break fill // a plain break would only leave the select
+			case rec, ok = <-s.input:
+				if i%ctxCheckInterval == ctxCheckInterval-1 && s.sortCtx.Err() != nil {
+					s.putChunk(c) // Return unused chunk to pool
+					return s.sortCtx.Err()
 				}
-				c.data = append(c.data, rec)
-			case <-s.sortCtx.Done():
-				s.putChunk(c) // Return unused chunk to pool
-				return s.sortCtx.Err()
+			default:
+				select {
+				case rec, ok = <-s.input:
+				case <-s.sortCtx.Done():
+					s.putChunk(c) // Return unused chunk to pool
+					return s.sortCtx.Err()
+				}
 			}
+			if !ok {
+				inputOpen = false
+				break fill
+			}
+			c.data = append(c.data, rec)
 		}
 		if len(c.data) == 0 {
 			// the chunk is empty, return it to pool
