@@ -8,8 +8,10 @@ import (
 	"bytes"
 	"cmp"
 	"context"
+	"encoding/binary"
 	"errors"
 	"io"
+	"math/rand"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -814,4 +816,56 @@ func BenchmarkSortManyChunks(b *testing.B) {
 			b.Fatal(err)
 		}
 	}
+}
+
+// benchmarkInts sorts 1M random ints in chunks of 100k with the sorter that newSorter returns.
+func benchmarkInts(b *testing.B, newSorter func(in chan int, config *Config) (Sorter, <-chan int, <-chan error)) {
+	r := rand.New(rand.NewSource(1))
+	data := make([]int, 1_000_000)
+	for i := range data {
+		data[i] = r.Int()
+	}
+	config := DefaultConfig()
+	config.ChunkSize = 100_000
+	config.TempFilesDir = b.TempDir()
+	b.ResetTimer()
+	for b.Loop() {
+		in := make(chan int, 1000)
+		go func() {
+			defer close(in)
+			for _, v := range data {
+				in <- v
+			}
+		}()
+		s, out, errc := newSorter(in, config)
+		s.Sort(context.Background())
+		for range out {
+		}
+		if err := <-errc; err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// BenchmarkOrderedInts sorts 1M ints with Ordered. Ordered used to gob-encode every record
+// with a new encoder and decoder, which made it much slower than Generic.
+func BenchmarkOrderedInts(b *testing.B) {
+	benchmarkInts(b, func(in chan int, config *Config) (Sorter, <-chan int, <-chan error) {
+		return Ordered(in, config)
+	})
+}
+
+// BenchmarkGenericVarintInts is BenchmarkOrderedInts using Generic with a varint codec.
+func BenchmarkGenericVarintInts(b *testing.B) {
+	toBytes := func(v int) ([]byte, error) { return binary.AppendVarint(nil, int64(v)), nil }
+	fromBytes := func(d []byte) (int, error) {
+		v, n := binary.Varint(d)
+		if n <= 0 {
+			return 0, errors.New("bad varint")
+		}
+		return int(v), nil
+	}
+	benchmarkInts(b, func(in chan int, config *Config) (Sorter, <-chan int, <-chan error) {
+		return Generic(in, fromBytes, toBytes, cmp.Compare[int], config)
+	})
 }
