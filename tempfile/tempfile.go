@@ -59,6 +59,7 @@ type fileReader struct {
 	readers      []*bufio.Reader
 	needsCleanup bool   // true if manual cleanup is needed (Windows)
 	filename     string // filename for cleanup
+	createdDir   string // directory we created (for cleanup), taken over from the FileWriter
 }
 
 // New creates a new FileWriter for virtual temporary files in the specified directory.
@@ -142,6 +143,7 @@ func (w *FileWriter) Close() error {
 	// Clean up directory if we created it and no other writers are using it
 	if w.createdDir != "" {
 		decrementDirRefCount(w.createdDir)
+		w.createdDir = ""
 	}
 
 	return err
@@ -190,6 +192,7 @@ func (w *FileWriter) Save() (TempReader, error) {
 		return nil, err
 	}
 
+	var r *fileReader
 	if w.needsCleanup {
 		// Windows case: close file and reopen for reading
 		filename := w.file.Name()
@@ -197,11 +200,19 @@ func (w *FileWriter) Save() (TempReader, error) {
 		if err != nil {
 			return nil, err
 		}
-		return newTempReader(filename, w.sections, w.needsCleanup)
+		r, err = newTempReader(filename, w.sections, w.needsCleanup)
 	} else {
 		// Unix case: file is unlinked, reuse the same file handle
-		return newTempReaderFromFile(w.file, w.sections, w.needsCleanup)
+		r, err = newTempReaderFromFile(w.file, w.sections, w.needsCleanup)
 	}
+	if err != nil {
+		return nil, err
+	}
+
+	// The reader now owns the directory reference and releases it on Close
+	r.createdDir = w.createdDir
+	w.createdDir = ""
+	return r, nil
 }
 
 // newTempReader creates a TempReader by opening a file by name.
@@ -261,6 +272,12 @@ func (r *fileReader) Close() error {
 		if removeErr := os.Remove(r.filename); removeErr != nil && err == nil {
 			err = removeErr
 		}
+	}
+
+	// Clean up directory if we created it and no other writers are using it
+	if r.createdDir != "" {
+		decrementDirRefCount(r.createdDir)
+		r.createdDir = ""
 	}
 
 	return err

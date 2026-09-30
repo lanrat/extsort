@@ -76,14 +76,9 @@ func TestDeserializationError(t *testing.T) {
 		panic("deserialization failed") // Simulate critical failure
 	}
 
-	sort, outChan, errChan := extsort.New(inputChan, failingFromBytes, KeyLessThan, nil)
-
-	// This should panic or fail gracefully during merge phase
-	defer func() {
-		if r := recover(); r != nil {
-			t.Logf("Expected panic during deserialization: %v", r)
-		}
-	}()
+	// One record per chunk, so the records are written to disk and read back with FromBytes
+	config := &extsort.Config{ChunkSize: 1}
+	sort, outChan, errChan := extsort.New(inputChan, failingFromBytes, KeyLessThan, config)
 
 	sort.Sort(context.Background())
 
@@ -92,51 +87,54 @@ func TestDeserializationError(t *testing.T) {
 		// Consume output
 	}
 
-	// If we get here, check for error
-	if err := <-errChan; err != nil {
-		t.Logf("Got expected deserialization error: %v", err)
-		// Verify it's our specific error type
-		var deserErr *extsort.DeserializationError
-		if !errors.As(err, &deserErr) {
-			t.Errorf("Expected DeserializationError, got: %T", err)
-		}
+	// The panic must be reported as an error
+	err := <-errChan
+	if err == nil {
+		t.Fatal("Expected deserialization error, got nil")
+	}
+	t.Logf("Got expected deserialization error: %v", err)
+	// Verify it's our specific error type
+	var deserErr *extsort.DeserializationError
+	if !errors.As(err, &deserErr) {
+		t.Errorf("Expected DeserializationError, got: %T", err)
 	}
 }
 
 // TestNilInputs tests behavior with nil function parameters
 func TestNilInputs(t *testing.T) {
-	inputChan := make(chan extsort.SortType, 1)
-	inputChan <- val{Key: 1, Order: 1}
-	close(inputChan)
-
-	// Test with nil fromBytes function
-	func() {
-		defer func() {
-			if r := recover(); r != nil {
-				t.Logf("Expected panic with nil fromBytes: %v", r)
-			}
-		}()
-
-		sort, _, _ := extsort.New(inputChan, nil, KeyLessThan, nil)
+	newInput := func() chan extsort.SortType {
+		inputChan := make(chan extsort.SortType, 4)
+		for i := 4; i > 0; i-- {
+			inputChan <- val{Key: i, Order: i}
+		}
+		close(inputChan)
+		return inputChan
+	}
+	// Two records per chunk, so chunks are sorted, written to disk and merged
+	config := func() *extsort.Config { return &extsort.Config{ChunkSize: 2} }
+	sortErr := func(sort *extsort.SortTypeSorter, outChan <-chan extsort.SortType, errChan <-chan error) error {
 		sort.Sort(context.Background())
-	}()
+		for range outChan {
+			// Consume output
+		}
+		return <-errChan
+	}
 
-	// Recreate input for next test
-	inputChan2 := make(chan extsort.SortType, 1)
-	inputChan2 <- val{Key: 1, Order: 1}
-	close(inputChan2)
+	// Test with nil fromBytes function: calling it during the merge must be reported
+	sort, outChan, errChan := extsort.New(newInput(), nil, KeyLessThan, config())
+	err := sortErr(sort, outChan, errChan)
+	var deserErr *extsort.DeserializationError
+	if !errors.As(err, &deserErr) {
+		t.Errorf("nil fromBytes: expected DeserializationError, got: %v", err)
+	}
 
-	// Test with nil comparison function
-	func() {
-		defer func() {
-			if r := recover(); r != nil {
-				t.Logf("Expected panic with nil lessFunc: %v", r)
-			}
-		}()
-
-		sort, _, _ := extsort.New(inputChan2, fromBytesForTest, nil, nil)
-		sort.Sort(context.Background())
-	}()
+	// Test with nil comparison function: calling it while sorting chunks must be reported
+	sort, outChan, errChan = extsort.New(newInput(), fromBytesForTest, nil, config())
+	err = sortErr(sort, outChan, errChan)
+	var compErr *extsort.ComparisonError
+	if !errors.As(err, &compErr) {
+		t.Errorf("nil lessFunc: expected ComparisonError, got: %v", err)
+	}
 }
 
 // TestLargeDataElements tests with unusually large individual elements
@@ -227,41 +225,47 @@ func largeLessThan(a, b extsort.SortType) bool {
 
 // TestComparisonFunctionPanic tests handling of panics in comparison function
 func TestComparisonFunctionPanic(t *testing.T) {
-	inputChan := make(chan extsort.SortType, 3)
-	inputChan <- val{Key: 1, Order: 1}
-	inputChan <- val{Key: 2, Order: 2}
-	inputChan <- val{Key: 3, Order: 3}
-	close(inputChan)
-
 	// Comparison function that panics
 	panicLessFunc := func(a, b extsort.SortType) bool {
 		panic("comparison function panic")
 	}
 
-	sort, outChan, errChan := extsort.New(inputChan, fromBytesForTest, panicLessFunc, nil)
+	for _, tc := range []struct {
+		name      string
+		chunkSize int
+	}{
+		{"while sorting a chunk", 3}, // all records in one chunk
+		{"while merging chunks", 1},  // a one-record chunk needs no comparison until the merge
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			inputChan := make(chan extsort.SortType, 3)
+			inputChan <- val{Key: 1, Order: 1}
+			inputChan <- val{Key: 2, Order: 2}
+			inputChan <- val{Key: 3, Order: 3}
+			close(inputChan)
 
-	// Should handle the panic gracefully
-	defer func() {
-		if r := recover(); r != nil {
-			t.Logf("Caught expected panic from comparison function: %v", r)
-		}
-	}()
+			config := &extsort.Config{ChunkSize: tc.chunkSize}
+			sort, outChan, errChan := extsort.New(inputChan, fromBytesForTest, panicLessFunc, config)
 
-	sort.Sort(context.Background())
+			sort.Sort(context.Background())
 
-	// Drain channels
-	for range outChan {
-		// Consume output
-	}
+			// Drain channels
+			for range outChan {
+				// Consume output
+			}
 
-	// Check for error
-	if err := <-errChan; err != nil {
-		t.Logf("Got expected error from panicking comparison: %v", err)
-		// Verify it's our specific error type
-		var compErr *extsort.ComparisonError
-		if !errors.As(err, &compErr) {
-			t.Errorf("Expected ComparisonError, got: %T", err)
-		}
+			// The panic must be reported as an error
+			err := <-errChan
+			if err == nil {
+				t.Fatal("Expected comparison error, got nil")
+			}
+			t.Logf("Got expected error from panicking comparison: %v", err)
+			// Verify it's our specific error type
+			var compErr *extsort.ComparisonError
+			if !errors.As(err, &compErr) {
+				t.Errorf("Expected ComparisonError, got: %T", err)
+			}
+		})
 	}
 }
 

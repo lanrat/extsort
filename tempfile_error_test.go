@@ -60,14 +60,11 @@ func TestTempFileCreationFailure(t *testing.T) {
 	// Create the sorter - this should fail when trying to create temp files
 	sort, outChan, errChan := extsort.New(inputChan, testFromBytes, testLess, config)
 
-	// Check if the sorter is nil (expected after fix)
+	// The temp file is created lazily, so the sorter is usable and Sort reports the failure
 	if sort == nil {
-		t.Log("Sorter is nil as expected when tempfile creation fails")
-	} else {
-		// If sorter is not nil, this should still not segfault after our fix
-		t.Log("Sorter is not nil, attempting to sort (this should not segfault)")
-		sort.Sort(context.Background())
+		t.Fatal("Sorter is nil; Sort() on it would panic instead of reporting the error")
 	}
+	sort.Sort(context.Background())
 
 	// Drain any output that might come through
 	outputCount := 0
@@ -134,14 +131,11 @@ func TestTempFileCreationFailureStrings(t *testing.T) {
 
 	sort, outChan, errChan := extsort.Strings(inputChan, config)
 
-	// Check if the sorter is nil (expected after fix)
+	// The temp file is created lazily, so the sorter is usable and Sort reports the failure
 	if sort == nil {
-		t.Log("String sorter is nil as expected when tempfile creation fails")
-	} else {
-		// If sorter is not nil, this should still not segfault after our fix
-		t.Log("String sorter is not nil, attempting to sort (this should not segfault)")
-		sort.Sort(context.Background())
+		t.Fatal("String sorter is nil; Sort() on it would panic instead of reporting the error")
 	}
+	sort.Sort(context.Background())
 
 	// Drain output
 	outputCount := 0
