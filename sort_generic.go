@@ -61,9 +61,9 @@ type memoryPools struct {
 // and employs memory pools to reduce garbage collection pressure during operation.
 type GenericSorter[E any] struct {
 	config         Config
-	buildSortCtx   context.Context
-	saveCtx        context.Context
+	sortCtx        context.Context // shared by the build, sort and save stages
 	mergeErrChan   chan error
+	newTempWriter  func() (tempfile.TempWriter, error) // called once a second chunk exists
 	tempWriter     tempfile.TempWriter
 	tempReader     tempfile.TempReader
 	input          <-chan E
@@ -155,19 +155,21 @@ func (s *GenericSorter[E]) initMemoryPools() *memoryPools {
 //
 // Call Sort() on the returned sorter to begin the sorting process.
 // Results are delivered via the output channel, errors via the error channel.
-// On error or interruption, temporary files may remain in config.TempFilesDir.
+// The temporary file is only created once the input spans more than one chunk;
+// failure to create it is reported on the error channel. The file is closed and
+// removed when the sort completes, fails or is cancelled.
 //
 // IMPORTANT: The input channel must be closed to signal completion. The Sort() method
 // will block until the input channel is closed. Failure to close it will cause a deadlock.
 func Generic[E any](input <-chan E, fromBytes FromBytesGeneric[E], toBytes ToBytesGeneric[E], compareFunc CompareGeneric[E], config *Config) (*GenericSorter[E], <-chan E, <-chan error) {
-	var err error
 	s := newSorter(input, fromBytes, toBytes, compareFunc, config)
-	s.tempWriter, err = tempfile.New(s.config.TempFilesDir, true)
-	if err != nil {
-		s.mergeErrChan <- err
-		close(s.mergeErrChan)
-		close(s.mergeChunkChan)
-		return nil, s.mergeChunkChan, s.mergeErrChan
+	dir := s.config.TempFilesDir
+	s.newTempWriter = func() (tempfile.TempWriter, error) {
+		w, err := tempfile.New(dir, true)
+		if err != nil {
+			return nil, err
+		}
+		return w, nil
 	}
 	return s, s.mergeChunkChan, s.mergeErrChan
 }
@@ -178,7 +180,9 @@ func Generic[E any](input <-chan E, fromBytes FromBytesGeneric[E], toBytes ToByt
 // All other behavior is identical to Generic().
 func MockGeneric[E any](input <-chan E, fromBytes FromBytesGeneric[E], toBytes ToBytesGeneric[E], compareFunc CompareGeneric[E], config *Config, n int) (*GenericSorter[E], <-chan E, <-chan error) {
 	s := newSorter(input, fromBytes, toBytes, compareFunc, config)
-	s.tempWriter = tempfile.Mock(n)
+	s.newTempWriter = func() (tempfile.TempWriter, error) {
+		return tempfile.Mock(n), nil
+	}
 	return s, s.mergeChunkChan, s.mergeErrChan
 }
 
@@ -194,35 +198,38 @@ func MockGeneric[E any](input <-chan E, fromBytes FromBytesGeneric[E], toBytes T
 // Merge uses the same context and runs in a goroutine after Sort returns().
 // for example, if calling sort in an errGroup, you must pass the group's parent context into sort.
 func (s *GenericSorter[E]) Sort(ctx context.Context) {
-	var buildSortErrGroup, saveErrGroup *errgroup.Group
-	buildSortErrGroup, s.buildSortCtx = errgroup.WithContext(ctx)
-	saveErrGroup, s.saveCtx = errgroup.WithContext(ctx)
+	// One group for all stages: an error in any stage cancels the others,
+	// so a failed save cannot leave the sort workers blocked on saveChunkChan.
+	group, groupCtx := errgroup.WithContext(ctx)
+	s.sortCtx = groupCtx
 
 	//start creating chunks
-	buildSortErrGroup.Go(s.buildChunks)
+	group.Go(s.buildChunks)
 
 	// sort chunks
+	var sorters sync.WaitGroup
+	sorters.Add(s.config.NumWorkers)
 	for i := 0; i < s.config.NumWorkers; i++ {
-		buildSortErrGroup.Go(s.sortChunks)
+		group.Go(func() error {
+			defer sorters.Done()
+			return s.sortChunks()
+		})
 	}
+
+	// Close saveChunkChan to signal end of chunks once every sort worker has
+	// exited, successfully or not, so the save worker always returns.
+	group.Go(func() error {
+		sorters.Wait()
+		close(s.saveChunkChan)
+		return nil
+	})
 
 	// Start the save worker that will handle single-chunk optimization
-	saveErrGroup.Go(s.saveChunksOptimized)
+	group.Go(s.saveChunksOptimized)
 
-	err := buildSortErrGroup.Wait()
+	err := group.Wait()
 	if err != nil {
-		s.mergeErrChan <- err
-		close(s.mergeErrChan)
-		close(s.mergeChunkChan)
-		return
-	}
-
-	// Close saveChunkChan to signal end of chunks
-	close(s.saveChunkChan)
-
-	// Wait for save worker to complete
-	err = saveErrGroup.Wait()
-	if err != nil {
+		s.closeTempFiles()
 		s.mergeErrChan <- err
 		close(s.mergeErrChan)
 		close(s.mergeChunkChan)
@@ -241,6 +248,19 @@ func (s *GenericSorter[E]) Sort(ctx context.Context) {
 	go s.mergeNChunks(ctx)
 }
 
+// closeTempFiles releases the temp file on paths that never reach the merge.
+// The merge closes the reader itself.
+func (s *GenericSorter[E]) closeTempFiles() {
+	if s.tempReader != nil {
+		_ = s.tempReader.Close()
+		s.tempReader = nil
+	}
+	if s.tempWriter != nil {
+		_ = s.tempWriter.Close()
+		s.tempWriter = nil
+	}
+}
+
 // buildChunks reads data from the input chan to builds chunks and pushes them to chunkChan
 func (s *GenericSorter[E]) buildChunks() error {
 	defer close(s.chunkChan) // if this is not called on error, causes a deadlock
@@ -254,9 +274,9 @@ func (s *GenericSorter[E]) buildChunks() error {
 					break
 				}
 				c.data = append(c.data, rec)
-			case <-s.buildSortCtx.Done():
+			case <-s.sortCtx.Done():
 				s.putChunk(c) // Return unused chunk to pool
-				return s.buildSortCtx.Err()
+				return s.sortCtx.Err()
 			}
 		}
 		if len(c.data) == 0 {
@@ -268,9 +288,9 @@ func (s *GenericSorter[E]) buildChunks() error {
 		select {
 		// chunk is now full
 		case s.chunkChan <- c:
-		case <-s.buildSortCtx.Done():
+		case <-s.sortCtx.Done():
 			s.putChunk(c) // Return unused chunk to pool
-			return s.buildSortCtx.Err()
+			return s.sortCtx.Err()
 		}
 	}
 
@@ -310,18 +330,18 @@ func (s *GenericSorter[E]) sortChunks() error {
 					// Sort completed successfully, proceed to save
 					select {
 					case s.saveChunkChan <- b:
-					case <-s.buildSortCtx.Done():
-						return s.buildSortCtx.Err()
+					case <-s.sortCtx.Done():
+						return s.sortCtx.Err()
 					}
-				case <-s.buildSortCtx.Done():
+				case <-s.sortCtx.Done():
 					// Context cancelled while sorting - abandon this chunk
-					return s.buildSortCtx.Err()
+					return s.sortCtx.Err()
 				}
 			} else {
 				return nil
 			}
-		case <-s.buildSortCtx.Done():
-			return s.buildSortCtx.Err()
+		case <-s.sortCtx.Done():
+			return s.sortCtx.Err()
 		}
 	}
 }
@@ -368,8 +388,8 @@ func (s *GenericSorter[E]) saveChunksOptimized() error {
 			// Channel closed, no chunks at all
 			return nil
 		}
-	case <-s.saveCtx.Done():
-		return s.saveCtx.Err()
+	case <-s.sortCtx.Done():
+		return s.sortCtx.Err()
 	}
 
 	// Try to get a second chunk with context checking
@@ -381,12 +401,20 @@ func (s *GenericSorter[E]) saveChunksOptimized() error {
 			s.singleChunk = firstChunk
 			return nil
 		}
-	case <-s.saveCtx.Done():
+	case <-s.sortCtx.Done():
 		s.putChunk(firstChunk) // Return to pool before exiting
-		return s.saveCtx.Err()
+		return s.sortCtx.Err()
 	}
 
-	// We have at least 2 chunks - use multi-chunk path
+	// We have at least 2 chunks - use multi-chunk path, which needs the temp file
+	tempWriter, err := s.newTempWriter()
+	if err != nil {
+		s.putChunk(firstChunk)
+		s.putChunk(secondChunk)
+		return err
+	}
+	s.tempWriter = tempWriter
+
 	// Save the first chunk
 	if err := s.saveChunk(firstChunk); err != nil {
 		s.putChunk(secondChunk) // Return to pool
@@ -403,17 +431,25 @@ func (s *GenericSorter[E]) saveChunksOptimized() error {
 		select {
 		case chunk, ok := <-s.saveChunkChan:
 			if !ok {
-				// Channel closed, we're done
+				// Channel closed, we're done, unless it closed because another stage failed
+				if err := s.sortCtx.Err(); err != nil {
+					return err
+				}
 				// Finalize the temp writer and save it for reading
-				var err error
-				s.tempReader, err = s.tempWriter.Save()
-				return err
+				tempReader, err := s.tempWriter.Save()
+				if err != nil {
+					return err
+				}
+				// The reader now owns the file
+				s.tempReader = tempReader
+				s.tempWriter = nil
+				return nil
 			}
 			if err := s.saveChunk(chunk); err != nil {
 				return err
 			}
-		case <-s.saveCtx.Done():
-			return s.saveCtx.Err()
+		case <-s.sortCtx.Done():
+			return s.sortCtx.Err()
 		}
 	}
 }
@@ -426,10 +462,10 @@ func (s *GenericSorter[E]) saveChunk(b *genericChunk[E]) error {
 
 	for _, d := range b.data {
 		// binary encoding for size
-		raw, err := s.toBytes(d)
+		raw, err := s.encode(d)
 		if err != nil {
 			s.putChunk(b) // Return chunk to pool on error
-			return NewSerializationError(err, "saveChunk")
+			return err
 		}
 		n := binary.PutUvarint(scratch, uint64(len(raw)))
 		_, err = s.tempWriter.Write(scratch[:n])
@@ -454,46 +490,62 @@ func (s *GenericSorter[E]) saveChunk(b *genericChunk[E]) error {
 	return nil
 }
 
+// encode serializes one record with toBytes, converting both a returned error
+// and a panic into a SerializationError.
+func (s *GenericSorter[E]) encode(d E) (raw []byte, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			raw = nil
+			err = NewSerializationError(r, "saveChunk")
+		}
+	}()
+	raw, err = s.toBytes(d)
+	if err != nil {
+		return nil, NewSerializationError(err, "saveChunk")
+	}
+	return raw, nil
+}
+
 // mergeNChunks runs asynchronously in the background feeding data to getNext
 // sends errors to s.mergeErrorChan. Uses parallel merging for better performance.
 func (s *GenericSorter[E]) mergeNChunks(ctx context.Context) {
+	// Deferred calls run last-in first-out: the error channel closes before the output channel.
 	defer close(s.mergeChunkChan)
-	defer func() {
-		if s.tempReader != nil {
-			err := s.tempReader.Close()
-			if err != nil {
-				// Try to send error, but don't panic if channel is closed
-				select {
-				case s.mergeErrChan <- err:
-				default:
-				}
-			}
-		}
-	}()
-	// Always ensure error channel is closed
 	defer close(s.mergeErrChan)
 
 	if s.tempReader == nil {
 		return
 	}
 
-	numChunks := s.tempReader.Size()
-	if numChunks == 0 {
-		return
+	var err error
+	if s.tempReader.Size() <= s.config.NumWorkers {
+		// For small number of chunks, use single-threaded merge
+		err = s.mergeNChunksSingleThreaded(ctx)
+	} else {
+		// Use parallel merging for many chunks
+		err = s.mergeNChunksParallel(ctx)
 	}
 
-	// For small number of chunks, use single-threaded merge
-	if numChunks <= s.config.NumWorkers {
-		s.mergeNChunksSingleThreaded(ctx)
-		return
+	// Release the temp file before signalling completion
+	if closeErr := s.tempReader.Close(); closeErr != nil && err == nil {
+		err = NewDiskError(closeErr, "close temp file", "")
 	}
+	s.tempReader = nil
 
-	// Use parallel merging for many chunks
-	s.mergeNChunksParallel(ctx)
+	if err != nil {
+		s.mergeErrChan <- err
+	}
 }
 
 // mergeNChunksSingleThreaded is the original single-threaded implementation
-func (s *GenericSorter[E]) mergeNChunksSingleThreaded(ctx context.Context) {
+func (s *GenericSorter[E]) mergeNChunksSingleThreaded(ctx context.Context) (err error) {
+	// A panicking compareFunc must not crash the process from this goroutine
+	defer func() {
+		if r := recover(); r != nil {
+			err = NewComparisonError(r, "mergeNChunksSingleThreaded")
+		}
+	}()
+
 	pq := queue.NewPriorityQueue(func(a, b *mergeFile[E]) int {
 		return s.compareFunc(a.nextRec, b.nextRec)
 	})
@@ -504,12 +556,11 @@ func (s *GenericSorter[E]) mergeNChunksSingleThreaded(ctx context.Context) {
 			reader:    s.tempReader.Read(i),
 		}
 		_, ok, err := merge.getNext() // start the merge by preloading the values
-		if err == io.EOF || !ok {
-			continue
-		}
 		if err != nil {
-			s.mergeErrChan <- err
-			return
+			return err
+		}
+		if !ok {
+			continue // empty chunk
 		}
 		pq.Push(merge)
 	}
@@ -518,8 +569,7 @@ func (s *GenericSorter[E]) mergeNChunksSingleThreaded(ctx context.Context) {
 		merge := pq.Peek()
 		rec, more, err := merge.getNext()
 		if err != nil {
-			s.mergeErrChan <- err
-			return
+			return err
 		}
 		if more {
 			pq.PeekUpdate()
@@ -530,14 +580,14 @@ func (s *GenericSorter[E]) mergeNChunksSingleThreaded(ctx context.Context) {
 		select {
 		case s.mergeChunkChan <- rec:
 		case <-ctx.Done():
-			s.mergeErrChan <- ctx.Err()
-			return
+			return ctx.Err()
 		}
 	}
+	return nil
 }
 
 // mergeNChunksParallel implements parallel k-way merging with robust cancellation
-func (s *GenericSorter[E]) mergeNChunksParallel(ctx context.Context) {
+func (s *GenericSorter[E]) mergeNChunksParallel(ctx context.Context) error {
 	numChunks := s.tempReader.Size()
 	numWorkers := s.config.NumWorkers
 
@@ -605,7 +655,10 @@ func (s *GenericSorter[E]) mergeNChunksParallel(ctx context.Context) {
 	finalMergeWg.Add(1)
 	go func() {
 		defer finalMergeWg.Done()
-		s.finalMergeSimple(mergeCtx, intermediateChans[:workersStarted])
+		if err := s.finalMergeSimple(mergeCtx, intermediateChans[:workersStarted]); err != nil {
+			errChan <- err
+			mergeCancel() // Stop the workers, which may be blocked sending to the final merge
+		}
 	}()
 
 	// Wait for all workers to complete
@@ -619,16 +672,22 @@ func (s *GenericSorter[E]) mergeNChunksParallel(ctx context.Context) {
 	// Wait for error collector to finish processing all errors
 	errorCollectorWg.Wait()
 
-	// Send any collected error (now safe to read mergeErr)
+	// Return any collected error (now safe to read mergeErr)
 	if mergeErr != nil {
-		s.mergeErrChan <- mergeErr
-	} else if ctx.Err() != nil {
-		s.mergeErrChan <- ctx.Err()
+		return mergeErr
 	}
+	return ctx.Err()
 }
 
 // mergeWorkerSimple merges a subset of chunks with proper context handling
-func (s *GenericSorter[E]) mergeWorkerSimple(ctx context.Context, startChunk, endChunk int, output chan<- E) error {
+func (s *GenericSorter[E]) mergeWorkerSimple(ctx context.Context, startChunk, endChunk int, output chan<- E) (err error) {
+	// A panicking compareFunc must not crash the process from this goroutine
+	defer func() {
+		if r := recover(); r != nil {
+			err = NewComparisonError(r, "mergeWorkerSimple")
+		}
+	}()
+
 	pq := queue.NewPriorityQueue(func(a, b *mergeFile[E]) int {
 		return s.compareFunc(a.nextRec, b.nextRec)
 	})
@@ -640,11 +699,11 @@ func (s *GenericSorter[E]) mergeWorkerSimple(ctx context.Context, startChunk, en
 			reader:    s.tempReader.Read(i),
 		}
 		_, ok, err := merge.getNext()
-		if err == io.EOF || !ok {
-			continue
-		}
 		if err != nil {
 			return err
+		}
+		if !ok {
+			continue // empty chunk
 		}
 		pq.Push(merge)
 	}
@@ -679,8 +738,16 @@ func (s *GenericSorter[E]) mergeWorkerSimple(ctx context.Context, startChunk, en
 	return nil
 }
 
-// finalMergeSimple performs streaming merge with simpler synchronization
-func (s *GenericSorter[E]) finalMergeSimple(ctx context.Context, intermediateChans []chan E) {
+// finalMergeSimple performs streaming merge with simpler synchronization.
+// It returns nil when ctx is cancelled; the caller reports the cancellation.
+func (s *GenericSorter[E]) finalMergeSimple(ctx context.Context, intermediateChans []chan E) (err error) {
+	// A panicking compareFunc must not crash the process from this goroutine
+	defer func() {
+		if r := recover(); r != nil {
+			err = NewComparisonError(r, "finalMergeSimple")
+		}
+	}()
+
 	pq := queue.NewPriorityQueue(func(a, b *channelMergeSource[E]) int {
 		return s.compareFunc(a.nextRec, b.nextRec)
 	})
@@ -697,7 +764,7 @@ func (s *GenericSorter[E]) finalMergeSimple(ctx context.Context, intermediateCha
 	for pq.Len() > 0 {
 		// Check if context is cancelled before each iteration
 		if ctx.Err() != nil {
-			return
+			return nil
 		}
 
 		source := pq.Peek()
@@ -713,9 +780,10 @@ func (s *GenericSorter[E]) finalMergeSimple(ctx context.Context, intermediateCha
 			}
 		case <-ctx.Done():
 			// Context cancelled, exit immediately
-			return
+			return nil
 		}
 	}
+	return nil
 }
 
 // channelMergeSource represents a source of sorted data from a channel
@@ -748,25 +816,43 @@ type mergeFile[E any] struct {
 // The first call will return nil while the struct is initialized.
 // It handles deserialization errors by wrapping them in DeserializationError instances.
 func (m *mergeFile[E]) getNext() (E, bool, error) {
-	var newRecBytes []byte
 	old := m.nextRec
 
 	n, err := binary.ReadUvarint(m.reader)
-	if err == nil {
-		newRecBytes = make([]byte, int(n))
-		_, err = io.ReadFull(m.reader, newRecBytes)
+	if err == io.EOF {
+		return old, false, nil // clean end of the chunk
 	}
 	if err != nil {
+		return old, false, err
+	}
+	newRecBytes := make([]byte, int(n))
+	if _, err := io.ReadFull(m.reader, newRecBytes); err != nil {
 		if err == io.EOF {
-			return old, false, nil
+			// a length header without its payload is a truncated record, not the end of the chunk
+			err = io.ErrUnexpectedEOF
 		}
 		return old, false, err
 	}
 
-	m.nextRec, err = m.fromBytes(newRecBytes)
+	m.nextRec, err = m.decode(newRecBytes)
 	if err != nil {
-		return old, true, NewDeserializationError(err, len(newRecBytes), "getNext")
+		return old, true, err
 	}
 
 	return old, true, nil
+}
+
+// decode deserializes one record with fromBytes, converting both a returned error
+// and a panic into a DeserializationError.
+func (m *mergeFile[E]) decode(d []byte) (rec E, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = NewDeserializationError(r, len(d), "getNext")
+		}
+	}()
+	rec, err = m.fromBytes(d)
+	if err != nil {
+		return rec, NewDeserializationError(err, len(d), "getNext")
+	}
+	return rec, nil
 }

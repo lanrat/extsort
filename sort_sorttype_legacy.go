@@ -45,14 +45,15 @@ func sortTypeToBytes(a SortType) (result []byte, err error) {
 // It wraps the legacy function to catch any panics and convert them to DeserializationError instances,
 // enabling graceful error handling during the merge phase of external sorting.
 func makeSortTypeFromBytes(fromBytes FromBytes) func([]byte) (SortType, error) {
-	return func(d []byte) (SortType, error) {
-		var err error
+	return func(d []byte) (result SortType, err error) {
+		// named results: the deferred recover must be able to set the returned error
 		defer func() {
 			if r := recover(); r != nil {
+				result = nil
 				err = NewDeserializationError(r, len(d), "FromBytes")
 			}
 		}()
-		return fromBytes(d), err
+		return fromBytes(d), nil
 	}
 }
 
@@ -80,9 +81,6 @@ func New(input <-chan SortType, fromBytes FromBytes, lessFunc CompareLessFunc, c
 	compareGeneric := makeCompareSortType(lessFunc)
 
 	genericSorter, output, errChan := Generic(input, fromBytesGeneric, sortTypeToBytes, compareGeneric, config)
-	if genericSorter == nil {
-		return nil, output, errChan
-	}
 	s := &SortTypeSorter{GenericSorter: *genericSorter}
 	return s, output, errChan
 }
@@ -99,9 +97,6 @@ func NewMock(input <-chan SortType, fromBytes FromBytes, lessFunc CompareLessFun
 	compareGeneric := makeCompareSortType(lessFunc)
 
 	genericSorter, output, errChan := MockGeneric(input, fromBytesGeneric, sortTypeToBytes, compareGeneric, config, n)
-	if genericSorter == nil {
-		return nil, output, errChan
-	}
 	s := &SortTypeSorter{GenericSorter: *genericSorter}
 	return s, output, errChan
 }

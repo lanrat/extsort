@@ -72,9 +72,6 @@ func (s *OrderedSorter[T]) toBytesOrdered(d T) ([]byte, error) {
 func Ordered[T cmp.Ordered](input <-chan T, config *Config) (*OrderedSorter[T], <-chan T, <-chan error) {
 	orderedSorter := newOrderedSorter[T]()
 	s, output, errChan := Generic(input, orderedSorter.fromBytesOrdered, orderedSorter.toBytesOrdered, cmp.Compare, config)
-	if s == nil {
-		return nil, output, errChan
-	}
 	orderedSorter.GenericSorter = *s
 	return orderedSorter, output, errChan
 }
@@ -85,9 +82,6 @@ func Ordered[T cmp.Ordered](input <-chan T, config *Config) (*OrderedSorter[T], 
 func OrderedMock[T cmp.Ordered](input <-chan T, config *Config, n int) (*OrderedSorter[T], <-chan T, <-chan error) {
 	orderedSorter := newOrderedSorter[T]()
 	s, output, errChan := MockGeneric(input, orderedSorter.fromBytesOrdered, orderedSorter.toBytesOrdered, cmp.Compare, config, n)
-	if s == nil {
-		return nil, output, errChan
-	}
 	orderedSorter.GenericSorter = *s
 	return orderedSorter, output, errChan
 }
