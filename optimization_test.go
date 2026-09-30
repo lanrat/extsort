@@ -3,73 +3,29 @@ package extsort_test
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/lanrat/extsort"
 )
 
-// TestSingleChunkOptimization verifies that small datasets don't create temp files
-func TestSingleChunkOptimization(t *testing.T) {
-	// Small dataset that should fit in a single chunk
-	inputChan := make(chan extsort.SortType, 10)
-	for i := 9; i >= 0; i-- { // reverse order to ensure sorting happens
-		inputChan <- val{Key: i, Order: i}
+// unusableTempDir returns a TempFilesDir that cannot hold files: a path below
+// a regular file. Any attempt to create a temp file there fails, so a sort
+// that succeeds with it never touched the disk. Counting files in a temp dir
+// can't show this, because temp files are unlinked as soon as they are created.
+func unusableTempDir(t *testing.T) string {
+	t.Helper()
+	file := filepath.Join(t.TempDir(), "not-a-dir")
+	if err := os.WriteFile(file, nil, 0o600); err != nil {
+		t.Fatalf("Failed to create file: %v", err)
 	}
-	close(inputChan)
-
-	// Create sorter with default config (ChunkSize = 1M)
-	sort, outChan, errChan := extsort.New(inputChan, fromBytesForTest, KeyLessThan, nil)
-
-	// Count temp files before
-	tempDir := os.TempDir()
-	beforeFiles, err := os.ReadDir(tempDir)
-	if err != nil {
-		t.Fatalf("Failed to read temp dir: %v", err)
-	}
-	beforeCount := len(beforeFiles)
-
-	// Sort
-	sort.Sort(context.Background())
-
-	// Read results
-	results := make([]val, 0, 10)
-	for rec := range outChan {
-		results = append(results, rec.(val))
-	}
-	if err := <-errChan; err != nil {
-		t.Fatalf("Sort error: %v", err)
-	}
-
-	// Count temp files after
-	afterFiles, err := os.ReadDir(tempDir)
-	if err != nil {
-		t.Fatalf("Failed to read temp dir: %v", err)
-	}
-	afterCount := len(afterFiles)
-
-	// Verify results are sorted
-	for i := 0; i < len(results); i++ {
-		if results[i].Key != i {
-			t.Errorf("Expected Key %d at position %d, got %d", i, i, results[i].Key)
-		}
-	}
-
-	// Verify no additional temp files were created
-	if afterCount > beforeCount {
-		t.Errorf("Expected no temp files to be created for single chunk, but temp file count increased from %d to %d", beforeCount, afterCount)
-	}
-
-	t.Logf("Single chunk optimization working: no temp files created for 10 items")
+	return filepath.Join(file, "sub")
 }
 
-// TestMultiChunkStillUsesTempFiles verifies that large datasets still use temp files
-func TestMultiChunkStillUsesTempFiles(t *testing.T) {
-	// Use a very small chunk size to force multiple chunks
-	config := extsort.DefaultConfig()
-	config.ChunkSize = 2 // Force multiple chunks for small dataset
-
+// sortTen sorts 10 records in reverse order and returns the output and the sort error.
+func sortTen(config *extsort.Config) ([]val, error) {
 	inputChan := make(chan extsort.SortType, 10)
-	for i := 9; i >= 0; i-- {
+	for i := 9; i >= 0; i-- { // reverse order to ensure sorting happens
 		inputChan <- val{Key: i, Order: i}
 	}
 	close(inputChan)
@@ -77,21 +33,55 @@ func TestMultiChunkStillUsesTempFiles(t *testing.T) {
 	sort, outChan, errChan := extsort.New(inputChan, fromBytesForTest, KeyLessThan, config)
 	sort.Sort(context.Background())
 
-	// Read results to completion
 	results := make([]val, 0, 10)
 	for rec := range outChan {
 		results = append(results, rec.(val))
 	}
-	if err := <-errChan; err != nil {
+	return results, <-errChan
+}
+
+// TestSingleChunkOptimization verifies that small datasets don't create temp files
+func TestSingleChunkOptimization(t *testing.T) {
+	// Default ChunkSize (1M) holds all 10 records in one chunk
+	config := extsort.DefaultConfig()
+	config.TempFilesDir = unusableTempDir(t)
+
+	results, err := sortTen(config)
+	if err != nil {
+		t.Fatalf("Single-chunk sort tried to create a temp file: %v", err)
+	}
+	if len(results) != 10 {
+		t.Fatalf("Expected 10 results, got %d", len(results))
+	}
+	for i := range results {
+		if results[i].Key != i {
+			t.Errorf("Expected Key %d at position %d, got %d", i, i, results[i].Key)
+		}
+	}
+}
+
+// TestMultiChunkStillUsesTempFiles verifies that large datasets still use temp files
+func TestMultiChunkStillUsesTempFiles(t *testing.T) {
+	// Use a very small chunk size to force multiple chunks
+	config := extsort.DefaultConfig()
+	config.ChunkSize = 2
+
+	results, err := sortTen(config)
+	if err != nil {
 		t.Fatalf("Sort error: %v", err)
 	}
-
-	// Verify results are sorted
-	for i := 0; i < len(results); i++ {
+	if len(results) != 10 {
+		t.Fatalf("Expected 10 results, got %d", len(results))
+	}
+	for i := range results {
 		if results[i].Key != i {
 			t.Errorf("Expected Key %d at position %d, got %d", i, i, results[i].Key)
 		}
 	}
 
-	t.Logf("Multi-chunk path still working with small chunk size")
+	// The same sort must fail when no temp file can be created, which shows it needs one
+	config.TempFilesDir = unusableTempDir(t)
+	if _, err := sortTen(config); err == nil {
+		t.Fatal("Expected an error from a multi-chunk sort with an unusable TempFilesDir, got nil")
+	}
 }
