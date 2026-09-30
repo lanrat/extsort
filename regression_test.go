@@ -681,3 +681,49 @@ func BenchmarkSortTenRecords(b *testing.B) {
 		}
 	}
 }
+
+// mergeConfig used to write defaults into the caller's Config, which raced when one
+// Config was shared by several sorters (run with -race) and surprised callers.
+func TestConfigIsNotModified(t *testing.T) {
+	shared := &Config{} // every zero field used to be overwritten
+	var wg sync.WaitGroup
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			s, out, errc := MockGeneric(descendingInts(3), atoiBytes, itoaBytes, cmp.Compare[int], shared, 0)
+			s.Sort(context.Background())
+			if _, err := drainWithTimeout(t, out, errc); err != nil {
+				t.Error(err)
+			}
+		}()
+	}
+	wg.Wait()
+	if *shared != (Config{}) {
+		t.Errorf("caller's Config was modified: %+v", *shared)
+	}
+}
+
+// Zero buffer sizes mean unbuffered channels; nil and negative values mean the defaults.
+func TestConfigBufferSizes(t *testing.T) {
+	for _, tc := range []struct {
+		name                  string
+		config                *Config
+		wantChunk, wantOutput int
+	}{
+		{"nil config", nil, 1, 1000},
+		{"zero values", &Config{}, 0, 0},
+		{"negative values", &Config{ChanBuffSize: -1, SortedChanBuffSize: -1}, 1, 1000},
+		{"explicit values", &Config{ChanBuffSize: 3, SortedChanBuffSize: 7}, 3, 7},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newSorter[int](nil, atoiBytes, itoaBytes, cmp.Compare[int], tc.config)
+			if got := cap(s.chunkChan); got != tc.wantChunk {
+				t.Errorf("chunk channel buffer = %d, want %d", got, tc.wantChunk)
+			}
+			if got := cap(s.mergeChunkChan); got != tc.wantOutput {
+				t.Errorf("output channel buffer = %d, want %d", got, tc.wantOutput)
+			}
+		})
+	}
+}
