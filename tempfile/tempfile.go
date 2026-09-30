@@ -29,6 +29,33 @@ import (
 // file IO buffer size for each file
 const fileBufferSize = 1 << 16 // 64k
 
+const (
+	// readBufferBudget caps the combined read buffers of all sections. A merge reads every
+	// section at once, so with many sections each gets an equal share instead of fileBufferSize.
+	readBufferBudget = 64 << 20 // 64 MiB
+	// minReadBufferSize is the smallest share a section larger than it gets.
+	minReadBufferSize = 4 << 10 // 4 KiB
+)
+
+// readBufferSize returns the read buffer size for one of n sections of length sectionLen:
+// fileBufferSize, shrunk to an equal share of readBufferBudget when there are many
+// sections, and to the section length when the section is smaller.
+func readBufferSize(n int, sectionLen int64) int {
+	size := fileBufferSize
+	if share := readBufferBudget / max(n, 1); share < size {
+		size = max(share, minReadBufferSize)
+	}
+	if sectionLen < int64(size) {
+		size = int(sectionLen) // bufio raises tiny sizes to its minimum
+	}
+	return size
+}
+
+// newSectionReader returns a buffered reader for bytes [start, end) of ra, one of n sections.
+func newSectionReader(ra io.ReaderAt, start, end int64, n int) *bufio.Reader {
+	return bufio.NewReaderSize(io.NewSectionReader(ra, start, end-start), readBufferSize(n, end-start))
+}
+
 // filename prefix for files put in temp directory
 var mergeFilenamePrefix = fmt.Sprintf("extsort_%d_", os.Getpid())
 
@@ -57,10 +84,10 @@ type FileWriter struct {
 type fileReader struct {
 	file         *os.File
 	sections     []int64
-	readers      []*bufio.Reader
-	needsCleanup bool   // true if manual cleanup is needed (Windows)
-	filename     string // filename for cleanup
-	createdDir   string // directory we created (for cleanup), taken over from the FileWriter
+	readers      []*bufio.Reader // created by Read on first use
+	needsCleanup bool            // true if manual cleanup is needed (Windows)
+	filename     string          // filename for cleanup
+	createdDir   string          // directory we created (for cleanup), taken over from the FileWriter
 }
 
 // New creates a new FileWriter for virtual temporary files in the specified directory.
@@ -246,13 +273,6 @@ func newTempReader(filename string, sections []int64, needsCleanup bool) (*fileR
 	r.needsCleanup = needsCleanup
 	r.filename = filename
 
-	offset := int64(0)
-	for i, end := range r.sections {
-		section := io.NewSectionReader(r.file, offset, end-offset)
-		offset = end
-		r.readers[i] = bufio.NewReaderSize(section, fileBufferSize)
-	}
-
 	return &r, nil
 }
 
@@ -266,13 +286,6 @@ func newTempReaderFromFile(file *os.File, sections []int64, needsCleanup bool) (
 	r.readers = make([]*bufio.Reader, len(r.sections))
 	r.needsCleanup = needsCleanup
 	r.filename = file.Name()
-
-	offset := int64(0)
-	for i, end := range r.sections {
-		section := io.NewSectionReader(r.file, offset, end-offset)
-		offset = end
-		r.readers[i] = bufio.NewReaderSize(section, fileBufferSize)
-	}
 
 	return &r, nil
 }
@@ -305,10 +318,20 @@ func (r *fileReader) Size() int {
 }
 
 // Read returns a buffered reader for the specified virtual file section.
+// The reader is created on first use, with a buffer sized by readBufferSize, so the
+// memory used grows with the sections read rather than 64 KiB per section up front.
+// Read may be called concurrently for different sections.
 // Panics if the section index is out of range.
 func (r *fileReader) Read(i int) *bufio.Reader {
 	if i < 0 || i >= len(r.readers) {
 		panic("tempfile: read request out of range")
+	}
+	if r.readers[i] == nil {
+		var start int64
+		if i > 0 {
+			start = r.sections[i-1]
+		}
+		r.readers[i] = newSectionReader(r.file, start, r.sections[i], len(r.sections))
 	}
 	return r.readers[i]
 }

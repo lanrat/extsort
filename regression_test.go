@@ -792,3 +792,26 @@ func TestTempFileHasOneSectionPerChunk(t *testing.T) {
 		})
 	}
 }
+
+// BenchmarkSortManyChunks sorts 200k records in 2,000 chunks. Save used to allocate a
+// 64 KiB read buffer for every chunk up front (125 MiB here); they are now sized to the chunk.
+func BenchmarkSortManyChunks(b *testing.B) {
+	const n = 200_000
+	dir := b.TempDir()
+	for b.Loop() {
+		in := make(chan int, 1000)
+		go func() {
+			defer close(in)
+			for i := n; i > 0; i-- {
+				in <- i
+			}
+		}()
+		s, out, errc := Generic(in, atoiBytes, itoaBytes, cmp.Compare[int], &Config{ChunkSize: 100, TempFilesDir: dir})
+		s.Sort(context.Background())
+		for range out {
+		}
+		if err := <-errc; err != nil {
+			b.Fatal(err)
+		}
+	}
+}

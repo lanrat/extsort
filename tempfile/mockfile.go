@@ -3,7 +3,6 @@ package tempfile
 import (
 	"bufio"
 	"bytes"
-	"io"
 )
 
 // MockFileWriter provides an in-memory implementation of the TempWriter interface.
@@ -104,13 +103,6 @@ func newMockTempReader(sections []int, data []byte) (*mockFileReader, error) {
 	r.sections = sections
 	r.readers = make([]*bufio.Reader, len(r.sections))
 
-	offset := 0
-	for i, end := range r.sections {
-		section := io.NewSectionReader(r.data, int64(offset), int64(end-offset))
-		offset = end
-		r.readers[i] = bufio.NewReaderSize(section, fileBufferSize)
-	}
-
 	return &r, nil
 }
 
@@ -127,11 +119,19 @@ func (r *mockFileReader) Size() int {
 	return len(r.readers)
 }
 
-// Read returns a buffered reader for the specified virtual file section.
+// Read returns a buffered reader for the specified virtual file section, created on
+// first use like the disk-based reader. Read may be called concurrently for different sections.
 // Panics if the section index is out of range.
 func (r *mockFileReader) Read(i int) *bufio.Reader {
 	if i < 0 || i >= len(r.readers) {
 		panic("tempfile: read request out of range")
+	}
+	if r.readers[i] == nil {
+		start := 0
+		if i > 0 {
+			start = r.sections[i-1]
+		}
+		r.readers[i] = newSectionReader(r.data, int64(start), int64(r.sections[i]), len(r.sections))
 	}
 	return r.readers[i]
 }

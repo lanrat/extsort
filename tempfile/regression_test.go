@@ -10,6 +10,18 @@ import (
 	"testing"
 )
 
+// testWriters creates each TempWriter implementation.
+var testWriters = map[string]func(t *testing.T) TempWriter{
+	"FileWriter": func(t *testing.T) TempWriter {
+		w, err := New(t.TempDir(), true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return w
+	},
+	"MockFileWriter": func(*testing.T) TempWriter { return Mock(0) },
+}
+
 // canTestPermissions reports whether chmod restrictions apply to this process.
 func canTestPermissions() bool {
 	return runtime.GOOS != "windows" && os.Geteuid() != 0
@@ -153,17 +165,7 @@ func BenchmarkWriteAndSave(b *testing.B) {
 // Save used to end the current section even when nothing was written since the last
 // Next, adding an empty section after the last one.
 func TestSaveAddsNoEmptySection(t *testing.T) {
-	writers := map[string]func(t *testing.T) TempWriter{
-		"FileWriter": func(t *testing.T) TempWriter {
-			w, err := New(t.TempDir(), true)
-			if err != nil {
-				t.Fatal(err)
-			}
-			return w
-		},
-		"MockFileWriter": func(*testing.T) TempWriter { return Mock(0) },
-	}
-	for name, newWriter := range writers {
+	for name, newWriter := range testWriters {
 		t.Run(name, func(t *testing.T) {
 			for _, tc := range []struct {
 				name     string
@@ -206,6 +208,73 @@ func TestSaveAddsNoEmptySection(t *testing.T) {
 						}
 					}
 				})
+			}
+		})
+	}
+}
+
+func TestReadBufferSize(t *testing.T) {
+	for _, tc := range []struct {
+		sections   int
+		sectionLen int64
+		want       int
+	}{
+		{1, 1 << 20, fileBufferSize},
+		{1000, 1 << 20, fileBufferSize}, // a 64 MiB share per 1000 sections is still above 64 KiB
+		{10_000, 1 << 20, readBufferBudget / 10_000},
+		{100_000, 1 << 20, minReadBufferSize},
+		{1, 100, 100},
+		{10_000, 100, 100},
+		{0, 0, 0},
+	} {
+		if got := readBufferSize(tc.sections, tc.sectionLen); got != tc.want {
+			t.Errorf("readBufferSize(%d, %d) = %d, want %d", tc.sections, tc.sectionLen, got, tc.want)
+		}
+	}
+}
+
+// allocatedBytes returns how many bytes f allocated.
+func allocatedBytes(f func()) uint64 {
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	f()
+	runtime.ReadMemStats(&after)
+	return after.TotalAlloc - before.TotalAlloc
+}
+
+// Save used to allocate a 64 KiB read buffer for every section up front, so merge memory
+// grew by 64 KiB per chunk. Buffers are now created on first Read and sized to the section.
+func TestReadBuffersAreLazyAndSized(t *testing.T) {
+	const sections = 1000 // 62.5 MiB of read buffers before
+	for name, newWriter := range testWriters {
+		t.Run(name, func(t *testing.T) {
+			w := newWriter(t)
+			for range sections {
+				if _, err := w.WriteString("0123456789"); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := w.Next(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var r TempReader
+			var err error
+			if n := allocatedBytes(func() { r, err = w.Save() }); n > 1<<20 {
+				t.Errorf("Save allocated %d bytes for %d sections", n, sections)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = r.Close() }()
+			if n := allocatedBytes(func() {
+				for i := range sections {
+					r.Read(i)
+				}
+			}); n > 1<<20 {
+				t.Errorf("reading %d 10-byte sections allocated %d bytes", sections, n)
+			}
+			if got, err := io.ReadAll(r.Read(sections - 1)); err != nil || string(got) != "0123456789" {
+				t.Errorf("last section = %q, %v", got, err)
 			}
 		})
 	}
