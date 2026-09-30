@@ -61,9 +61,8 @@ func (s *GenericSorter[E]) putChunk(c *genericChunk[E]) {
 
 // memoryPools holds sync.Pool instances for memory reuse
 type memoryPools struct {
-	chunkPool   sync.Pool // *chunk objects
-	slicePool   sync.Pool // []E slices
-	scratchPool sync.Pool // scratch buffers for binary encoding
+	chunkPool sync.Pool // *chunk objects
+	slicePool sync.Pool // []E slices
 }
 
 // GenericSorter implements external sorting for any type E using a divide-and-conquer approach.
@@ -87,6 +86,26 @@ type GenericSorter[E any] struct {
 	toBytes        ToBytesGeneric[E]
 	pools          *memoryPools
 	singleChunk    *genericChunk[E] // Holds the single chunk for optimization
+	// Set by useBuiltinCodec for the package's own codecs only
+	appendBytes     appendBytesFunc[E] // encodes into a reused buffer instead of toBytes
+	reuseReadBuffer bool               // fromBytes never keeps its input, so the merge reuses one buffer
+}
+
+// appendBytesFunc appends the encoding of v to dst and returns the extended slice.
+type appendBytesFunc[E any] func(dst []byte, v E) []byte
+
+// useBuiltinCodec makes the sorter reuse buffers with one of the package's own codecs:
+// records are encoded with appendBytes into one reused buffer, and the merge decodes all the
+// records of a chunk from one reused buffer. The second is only safe because those fromBytes
+// functions never keep the slice they are given; a user's FromBytesGeneric may.
+func (s *GenericSorter[E]) useBuiltinCodec(appendBytes appendBytesFunc[E]) {
+	s.appendBytes = appendBytes
+	s.reuseReadBuffer = true
+}
+
+// toBytesFunc returns the ToBytesGeneric form of appendBytes.
+func toBytesFunc[E any](appendBytes appendBytesFunc[E]) ToBytesGeneric[E] {
+	return func(v E) ([]byte, error) { return appendBytes(nil, v), nil }
 }
 
 // newSorter creates a new GenericSorter instance with the given configuration.
@@ -110,7 +129,7 @@ func newSorter[E any](input <-chan E, fromBytes FromBytesGeneric[E], toBytes ToB
 }
 
 // initMemoryPools initializes sync.Pool instances for efficient memory reuse during sorting.
-// Creates pools for chunks, slices, and scratch buffers to reduce GC pressure
+// Creates pools for chunks and their slices to reduce GC pressure
 // and improve performance during high-frequency allocation/deallocation cycles.
 func (s *GenericSorter[E]) initMemoryPools() *memoryPools {
 	pools := &memoryPools{}
@@ -127,14 +146,6 @@ func (s *GenericSorter[E]) initMemoryPools() *memoryPools {
 	pools.slicePool = sync.Pool{
 		New: func() any {
 			return new([]E)
-		},
-	}
-
-	// Pool for scratch buffers (for binary encoding) - store pointers to slices
-	pools.scratchPool = sync.Pool{
-		New: func() any {
-			slice := make([]byte, binary.MaxVarintLen64)
-			return &slice
 		},
 	}
 
@@ -498,39 +509,61 @@ func (s *GenericSorter[E]) saveChunksOptimized() error {
 	}
 }
 
-// saveChunk processes a single chunk
+// saveChunk writes a sorted chunk as the next section of the temp file, each record as a
+// uvarint length followed by its encoding, and returns the chunk to the pool.
 func (s *GenericSorter[E]) saveChunk(b *genericChunk[E]) error {
-	scratchPtr := s.pools.scratchPool.Get().(*[]byte)
-	scratch := *scratchPtr
-	defer s.pools.scratchPool.Put(scratchPtr)
+	defer s.putChunk(b)
 
-	for _, d := range b.data {
-		// binary encoding for size
+	var err error
+	if s.appendBytes != nil {
+		err = s.writeAppended(b.data)
+	} else {
+		err = s.writeEncoded(b.data)
+	}
+	if err != nil {
+		return err
+	}
+	if _, err := s.tempWriter.Next(); err != nil {
+		return NewDiskError(err, "next chunk", "")
+	}
+	return nil
+}
+
+// writeEncoded writes records encoded by toBytes.
+func (s *GenericSorter[E]) writeEncoded(records []E) error {
+	var header [binary.MaxVarintLen64]byte
+	for _, d := range records {
 		raw, err := s.encode(d)
 		if err != nil {
-			s.putChunk(b) // Return chunk to pool on error
 			return err
 		}
-		n := binary.PutUvarint(scratch, uint64(len(raw)))
-		_, err = s.tempWriter.Write(scratch[:n])
-		if err != nil {
-			s.putChunk(b) // Return chunk to pool on error
+		n := binary.PutUvarint(header[:], uint64(len(raw)))
+		if _, err := s.tempWriter.Write(header[:n]); err != nil {
 			return NewDiskError(err, "write size header", "")
 		}
-		// add data
-		_, err = s.tempWriter.Write(raw)
-		if err != nil {
-			s.putChunk(b) // Return chunk to pool on error
+		if _, err := s.tempWriter.Write(raw); err != nil {
 			return NewDiskError(err, "write data", "")
 		}
 	}
-	_, err := s.tempWriter.Next()
-	if err != nil {
-		s.putChunk(b) // Return chunk to pool on error
-		return NewDiskError(err, "next chunk", "")
+	return nil
+}
+
+// writeAppended writes records encoded by appendBytes into one reused buffer. Each record
+// is appended after room for the longest length header, and the header is then put just
+// before it, so a record and its header go out in a single Write.
+func (s *GenericSorter[E]) writeAppended(records []E) error {
+	const room = binary.MaxVarintLen64
+	buf := make([]byte, room, 256)
+	var header [room]byte
+	for _, d := range records {
+		buf = s.appendBytes(buf[:room], d)
+		n := binary.PutUvarint(header[:], uint64(len(buf)-room))
+		start := room - n
+		copy(buf[start:], header[:n])
+		if _, err := s.tempWriter.Write(buf[start:]); err != nil {
+			return NewDiskError(err, "write data", "")
+		}
 	}
-	// Successfully processed chunk, return to pool
-	s.putChunk(b)
 	return nil
 }
 
@@ -595,10 +628,7 @@ func (s *GenericSorter[E]) mergeNChunksSingleThreaded(ctx context.Context) (err 
 	})
 
 	for i := 0; i < s.tempReader.Size(); i++ {
-		merge := &mergeFile[E]{
-			fromBytes: s.fromBytes,
-			reader:    s.tempReader.Read(i),
-		}
+		merge := s.newMergeFile(i)
 		_, ok, err := merge.getNext() // start the merge by preloading the values
 		if err != nil {
 			return err
@@ -775,10 +805,7 @@ func (s *GenericSorter[E]) mergeWorkerSimple(ctx context.Context, startChunk, en
 
 	// Initialize merge files for this worker's chunk range
 	for i := startChunk; i < endChunk; i++ {
-		merge := &mergeFile[E]{
-			fromBytes: s.fromBytes,
-			reader:    s.tempReader.Read(i),
-		}
+		merge := s.newMergeFile(i)
 		_, ok, err := merge.getNext()
 		if err != nil {
 			return err
@@ -903,11 +930,22 @@ func (c *channelMergeSource[E]) releaseBatch() {
 	c.batch = nil
 }
 
+// newMergeFile returns a mergeFile reading section i of the temp file.
+func (s *GenericSorter[E]) newMergeFile(i int) *mergeFile[E] {
+	return &mergeFile[E]{
+		fromBytes: s.fromBytes,
+		reader:    s.tempReader.Read(i),
+		reuseBuf:  s.reuseReadBuffer,
+	}
+}
+
 // mergeFile represents each sorted chunk on disk and its next value
 type mergeFile[E any] struct {
 	nextRec   E
 	fromBytes FromBytesGeneric[E]
 	reader    *bufio.Reader
+	reuseBuf  bool   // fromBytes never keeps its input, so every record can be read into buf
+	buf       []byte // holds the last record read when reuseBuf is set
 }
 
 // getNext returns the next value from the sorted chunk on disk.
@@ -923,7 +961,15 @@ func (m *mergeFile[E]) getNext() (E, bool, error) {
 	if err != nil {
 		return old, false, err
 	}
-	newRecBytes := make([]byte, int(n))
+	var newRecBytes []byte
+	if m.reuseBuf {
+		if uint64(cap(m.buf)) < n {
+			m.buf = make([]byte, int(n))
+		}
+		newRecBytes = m.buf[:n]
+	} else {
+		newRecBytes = make([]byte, int(n))
+	}
 	if _, err := io.ReadFull(m.reader, newRecBytes); err != nil {
 		if err == io.EOF {
 			// a length header without its payload is a truncated record, not the end of the chunk
