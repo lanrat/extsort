@@ -15,6 +15,14 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
+const (
+	// mergeBatchSize is how many records a merge worker hands to the final merge at a time.
+	// Sending records one per channel operation made the handoffs cost more than the merge.
+	mergeBatchSize = 1024
+	// mergeBatchBuffer is how many full batches a merge worker can queue for the final merge.
+	mergeBatchBuffer = 2
+)
+
 // genericChunk represents a collection of any data that can be sorted.
 // It holds data in memory before being sorted using slices.SortFunc.
 type genericChunk[E any] struct {
@@ -592,11 +600,10 @@ func (s *GenericSorter[E]) mergeNChunksParallel(ctx context.Context) error {
 	mergeCtx, mergeCancel := context.WithCancel(ctx)
 	defer mergeCancel() // Ensure all goroutines stop when this function returns
 
-	// Create intermediate channels for each worker
-	intermediateChanSize := s.config.SortedChanBuffSize
-	intermediateChans := make([]chan E, numWorkers)
-	for i := range intermediateChans {
-		intermediateChans[i] = make(chan E, intermediateChanSize)
+	// Create a stream for each worker to pass its merged records to the final merge in batches
+	streams := make([]mergeStream[E], numWorkers)
+	for i := range streams {
+		streams[i] = newMergeStream[E]()
 	}
 
 	// Error collection
@@ -621,15 +628,15 @@ func (s *GenericSorter[E]) mergeNChunksParallel(ctx context.Context) error {
 		workersStarted++
 		wg.Add(1)
 
-		go func(workerIdx, start, end int) {
+		go func(stream mergeStream[E], start, end int) {
 			defer wg.Done()
-			defer close(intermediateChans[workerIdx]) // Each worker closes its own channel
+			defer close(stream.batches) // Each worker closes its own channel
 
-			if err := s.mergeWorkerSimple(mergeCtx, start, end, intermediateChans[workerIdx]); err != nil {
+			if err := s.mergeWorkerSimple(mergeCtx, start, end, stream); err != nil {
 				errChan <- err
 				mergeCancel() // Cancel all operations on error
 			}
-		}(i, startChunk, endChunk)
+		}(streams[i], startChunk, endChunk)
 	}
 
 	// Start error collector with wait group for synchronization
@@ -652,7 +659,7 @@ func (s *GenericSorter[E]) mergeNChunksParallel(ctx context.Context) error {
 	finalMergeWg.Add(1)
 	go func() {
 		defer finalMergeWg.Done()
-		if err := s.finalMergeSimple(mergeCtx, intermediateChans[:workersStarted]); err != nil {
+		if err := s.finalMergeSimple(mergeCtx, streams[:workersStarted]); err != nil {
 			errChan <- err
 			mergeCancel() // Stop the workers, which may be blocked sending to the final merge
 		}
@@ -676,8 +683,46 @@ func (s *GenericSorter[E]) mergeNChunksParallel(ctx context.Context) error {
 	return ctx.Err()
 }
 
+// mergeStream carries one merge worker's records to the final merge in batches.
+type mergeStream[E any] struct {
+	batches chan []E // batches of records in merge order, closed when the worker stops
+	free    chan []E // used-up batches handed back to the worker for reuse
+}
+
+func newMergeStream[E any]() mergeStream[E] {
+	return mergeStream[E]{
+		batches: make(chan []E, mergeBatchBuffer),
+		// room for every batch a worker has: those queued, the one it fills and the one being merged
+		free: make(chan []E, mergeBatchBuffer+2),
+	}
+}
+
+// emptyBatch returns a batch to fill, reusing one the final merge handed back if there is one.
+func (m mergeStream[E]) emptyBatch() []E {
+	select {
+	case batch := <-m.free:
+		return batch[:0]
+	default:
+		return make([]E, 0, mergeBatchSize)
+	}
+}
+
+// send queues a batch for the final merge. Once ctx is done it returns ctx's error instead,
+// so a worker stops at its next batch after a cancellation.
+func (m mergeStream[E]) send(ctx context.Context, batch []E) error {
+	if err := ctx.Err(); err != nil {
+		return err // the select below picks at random when the channel has room too
+	}
+	select {
+	case m.batches <- batch:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 // mergeWorkerSimple merges a subset of chunks with proper context handling
-func (s *GenericSorter[E]) mergeWorkerSimple(ctx context.Context, startChunk, endChunk int, output chan<- E) (err error) {
+func (s *GenericSorter[E]) mergeWorkerSimple(ctx context.Context, startChunk, endChunk int, output mergeStream[E]) (err error) {
 	// A panicking compareFunc must not crash the process from this goroutine
 	defer func() {
 		if r := recover(); r != nil {
@@ -705,15 +750,9 @@ func (s *GenericSorter[E]) mergeWorkerSimple(ctx context.Context, startChunk, en
 		pq.Push(merge)
 	}
 
-	// Merge this worker's chunks
+	// Merge this worker's chunks, checking ctx as each batch is sent
+	batch := output.emptyBatch()
 	for pq.Len() > 0 {
-		// Check context before processing
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-		}
-
 		merge := pq.Peek()
 		rec, more, err := merge.getNext()
 		if err != nil {
@@ -725,19 +764,23 @@ func (s *GenericSorter[E]) mergeWorkerSimple(ctx context.Context, startChunk, en
 			pq.Pop()
 		}
 
-		select {
-		case output <- rec:
-		case <-ctx.Done():
-			return ctx.Err()
+		batch = append(batch, rec)
+		if len(batch) == mergeBatchSize {
+			if err := output.send(ctx, batch); err != nil {
+				return err
+			}
+			batch = output.emptyBatch()
 		}
 	}
-
+	if len(batch) > 0 {
+		return output.send(ctx, batch)
+	}
 	return nil
 }
 
 // finalMergeSimple performs streaming merge with simpler synchronization.
 // It returns nil when ctx is cancelled; the caller reports the cancellation.
-func (s *GenericSorter[E]) finalMergeSimple(ctx context.Context, intermediateChans []chan E) (err error) {
+func (s *GenericSorter[E]) finalMergeSimple(ctx context.Context, streams []mergeStream[E]) (err error) {
 	// A panicking compareFunc must not crash the process from this goroutine
 	defer func() {
 		if r := recover(); r != nil {
@@ -750,8 +793,8 @@ func (s *GenericSorter[E]) finalMergeSimple(ctx context.Context, intermediateCha
 	})
 
 	// Initialize sources
-	for _, ch := range intermediateChans {
-		source := &channelMergeSource[E]{ch: ch}
+	for _, stream := range streams {
+		source := &channelMergeSource[E]{stream: stream}
 		if source.getNextSimple() {
 			pq.Push(source)
 		}
@@ -783,23 +826,42 @@ func (s *GenericSorter[E]) finalMergeSimple(ctx context.Context, intermediateCha
 	return nil
 }
 
-// channelMergeSource represents a source of sorted data from a channel
+// channelMergeSource represents a source of sorted data from a merge worker's stream
 type channelMergeSource[E any] struct {
-	ch      <-chan E
+	stream  mergeStream[E]
+	batch   []E // the batch being merged
+	pos     int // index in batch of the record after nextRec
 	nextRec E
-	hasNext bool
 }
 
-// getNextSimple reads from channel without context (channel close handles cancellation)
+// getNextSimple advances to the next record, receiving the next batch once the current one
+// is used up. It reads without context: the worker closes its channel when it stops.
 func (c *channelMergeSource[E]) getNextSimple() bool {
-	rec, ok := <-c.ch
-	if ok {
-		c.nextRec = rec
-		c.hasNext = true
-		return true
+	for c.pos == len(c.batch) {
+		c.releaseBatch()
+		batch, ok := <-c.stream.batches
+		if !ok {
+			return false
+		}
+		c.batch, c.pos = batch, 0
 	}
-	c.hasNext = false
-	return false
+	c.nextRec = c.batch[c.pos]
+	c.pos++
+	return true
+}
+
+// releaseBatch hands the used-up batch back to the worker, or drops it if the worker
+// already has enough spare batches.
+func (c *channelMergeSource[E]) releaseBatch() {
+	if c.batch == nil {
+		return
+	}
+	clear(c.batch) // the records were sent on; don't keep them reachable from a spare batch
+	select {
+	case c.stream.free <- c.batch:
+	default:
+	}
+	c.batch = nil
 }
 
 // mergeFile represents each sorted chunk on disk and its next value
