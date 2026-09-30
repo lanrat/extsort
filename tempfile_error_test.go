@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/lanrat/extsort"
@@ -13,6 +14,8 @@ import (
 // failures gracefully without causing segmentation faults. This test addresses
 // the bug reported in issue #10 where a full filesystem causes a segfault.
 func TestTempFileCreationFailure(t *testing.T) {
+	skipUnlessDirPermissionsEnforced(t)
+
 	// Create a test directory that will be automatically cleaned up
 	testDir := t.TempDir()
 
@@ -91,6 +94,8 @@ func TestTempFileCreationFailure(t *testing.T) {
 
 // TestTempFileCreationFailureStrings tests the same scenario with string sorting
 func TestTempFileCreationFailureStrings(t *testing.T) {
+	skipUnlessDirPermissionsEnforced(t)
+
 	testDir := t.TempDir()
 	readOnlyDir := filepath.Join(testDir, "readonly")
 	err := os.Mkdir(readOnlyDir, 0555)
@@ -153,6 +158,18 @@ func TestTempFileCreationFailureStrings(t *testing.T) {
 		t.Logf("Got expected error from string sort: %v", err)
 	default:
 		t.Fatal("Expected an error to be sent to error channel")
+	}
+}
+
+// skipUnlessDirPermissionsEnforced skips tests that rely on a 0555 directory
+// rejecting new files, which does not hold on Windows or when running as root.
+func skipUnlessDirPermissionsEnforced(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("directory permission bits do not prevent file creation on Windows")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("root can create files in a read-only directory")
 	}
 }
 

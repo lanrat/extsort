@@ -16,7 +16,8 @@ var (
 	memoryAllowedDir string
 	dirDiscoveryOnce sync.Once
 
-	// Cached expensive operations
+	// Cached expensive operations, filled on first use by cacheOnce
+	cacheOnce     sync.Once
 	cachedHomeDir string
 	cachedWorkDir string
 	cachedOSTemp  string
@@ -46,9 +47,6 @@ func GetTempDir(dir string, preferDiskBacked bool) string {
 // This runs once and caches expensive operations like os.UserHomeDir() and os.Getwd().
 // Called by sync.Once to ensure thread-safe initialization.
 func discoverOptimalDirectories() {
-	// Cache expensive operations once
-	cacheExpensiveOperations()
-
 	// Find optimal directory for disk-preferred usage
 	diskPreferredDir = findBestDirectory(true)
 
@@ -106,6 +104,7 @@ func firstUsableDir(candidates []string) string {
 // When preferDiskBacked is true, disk-preferred candidates are prioritized first.
 // Uses cached values for performance. The order depends on the OS and preferDiskBacked setting.
 func buildCandidateList(preferDiskBacked bool) []string {
+	cacheOnce.Do(cacheExpensiveOperations)
 	var candidates []string
 
 	if preferDiskBacked {
@@ -155,6 +154,7 @@ func buildDiskPreferredCandidates() []string {
 // Creates process-specific subdirectories in the user's home directory and current
 // working directory. Uses cached directory values for performance.
 func buildAdditionalFallbacks() []string {
+	cacheOnce.Do(cacheExpensiveOperations)
 	var candidates []string
 
 	// Try user home directory with subdirectory (using cached value)
