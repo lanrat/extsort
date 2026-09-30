@@ -183,11 +183,9 @@ func (w *FileWriter) Next() (int64, error) {
 // After calling Save(), the FileWriter can no longer be used for writing.
 // The returned TempReader allows concurrent access to any virtual file section.
 func (w *FileWriter) Save() (TempReader, error) {
+	// No Sync: the file is only read back by this process, and on Unix it is already
+	// unlinked, so flushing it to stable storage only costs time.
 	_, err := w.Next()
-	if err != nil {
-		return nil, err
-	}
-	err = w.file.Sync()
 	if err != nil {
 		return nil, err
 	}

@@ -119,3 +119,32 @@ func TestReaderCloseRemovesExtsortDir(t *testing.T) {
 		t.Errorf("%s still exists after the reader was closed", dir)
 	}
 }
+
+// BenchmarkWriteAndSave writes 64 MiB in 1 MiB sections, then saves and closes the file.
+// Save used to fsync the file, which is already unlinked on Unix and only read back by
+// this process.
+func BenchmarkWriteAndSave(b *testing.B) {
+	data := make([]byte, 1<<20)
+	dir := b.TempDir()
+	for b.Loop() {
+		w, err := New(dir, true)
+		if err != nil {
+			b.Fatal(err)
+		}
+		for range 64 {
+			if _, err := w.Write(data); err != nil {
+				b.Fatal(err)
+			}
+			if _, err := w.Next(); err != nil {
+				b.Fatal(err)
+			}
+		}
+		r, err := w.Save()
+		if err != nil {
+			b.Fatal(err)
+		}
+		if err := r.Close(); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
