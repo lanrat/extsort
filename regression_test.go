@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"testing/iotest"
 	"time"
@@ -725,5 +726,45 @@ func TestConfigBufferSizes(t *testing.T) {
 				t.Errorf("output channel buffer = %d, want %d", got, tc.wantOutput)
 			}
 		})
+	}
+}
+
+// The parallel merge (v1.1.0) calls FromBytes from several goroutines at once, which
+// broke legacy FromBytes functions written for v1.0 that are not safe for concurrent
+// use. New and NewMock now serialize the calls.
+func TestLegacyFromBytesIsNotCalledConcurrently(t *testing.T) {
+	const n = 200
+	in := make(chan SortType, n)
+	for i := n; i > 0; i-- {
+		in <- legacyInt(i)
+	}
+	close(in)
+	var inFlight, maxInFlight atomic.Int32
+	fromBytes := func(b []byte) SortType {
+		now := inFlight.Add(1)
+		defer inFlight.Add(-1)
+		for {
+			seen := maxInFlight.Load()
+			if now <= seen || maxInFlight.CompareAndSwap(seen, now) {
+				break
+			}
+		}
+		time.Sleep(20 * time.Microsecond) // widen the window for overlapping calls
+		v, _ := strconv.Atoi(string(b))
+		return legacyInt(v)
+	}
+	less := func(a, b SortType) bool { return a.(legacyInt) < b.(legacyInt) }
+	// One record per chunk and 4 workers: the parallel merge reads 4 chunks at once
+	sorter, out, errc := NewMock(in, fromBytes, less, &Config{ChunkSize: 1, NumWorkers: 4}, 0)
+	sorter.Sort(context.Background())
+	got, err := drainWithTimeout(t, out, errc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != n {
+		t.Fatalf("got %d records, want %d", len(got), n)
+	}
+	if m := maxInFlight.Load(); m != 1 {
+		t.Errorf("FromBytes ran %d calls at once, want 1", m)
 	}
 }

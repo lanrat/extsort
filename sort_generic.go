@@ -153,6 +153,9 @@ func (s *GenericSorter[E]) initMemoryPools() *memoryPools {
 //  3. Saves sorted chunks to temporary files using toBytes serialization
 //  4. Merges all chunks back into sorted order using fromBytes deserialization
 //
+// fromBytes, toBytes and compareFunc are called from several goroutines at once,
+// so they must be safe for concurrent use.
+//
 // Call Sort() on the returned sorter to begin the sorting process.
 // Results are delivered via the output channel, errors via the error channel.
 // The temporary file is only created once the input spans more than one chunk;
@@ -177,7 +180,8 @@ func Generic[E any](input <-chan E, fromBytes FromBytesGeneric[E], toBytes ToByt
 // MockGeneric creates an external sorter that uses in-memory storage instead of disk files.
 // This is primarily useful for testing and benchmarking without filesystem I/O overhead.
 // The parameter n specifies the initial capacity of the in-memory buffer.
-// All other behavior is identical to Generic().
+// All other behavior is identical to Generic(), including that fromBytes, toBytes and
+// compareFunc must be safe for concurrent use.
 func MockGeneric[E any](input <-chan E, fromBytes FromBytesGeneric[E], toBytes ToBytesGeneric[E], compareFunc CompareGeneric[E], config *Config, n int) (*GenericSorter[E], <-chan E, <-chan error) {
 	s := newSorter(input, fromBytes, toBytes, compareFunc, config)
 	s.newTempWriter = func() (tempfile.TempWriter, error) {
