@@ -8,8 +8,10 @@ import (
 	"bytes"
 	"cmp"
 	"context"
+	"encoding/binary"
 	"errors"
 	"io"
+	"math/rand"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -17,6 +19,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"testing/iotest"
 	"time"
@@ -89,9 +92,10 @@ type trackedTemp struct {
 	readErr  map[int]error // section index -> error returned when reading it
 	closeErr error         // returned by the reader's Close
 
-	mu      sync.Mutex
-	created int
-	closed  int
+	mu       sync.Mutex
+	created  int
+	closed   int
+	sections int // Size of the last reader returned by Save
 }
 
 func (tt *trackedTemp) newWriter() (tempfile.TempWriter, error) {
@@ -135,6 +139,9 @@ func (w *trackedWriter) Save() (tempfile.TempReader, error) {
 	if err != nil {
 		return nil, err
 	}
+	w.tt.mu.Lock()
+	w.tt.sections = r.Size()
+	w.tt.mu.Unlock()
 	return &trackedReader{TempReader: r, tt: w.tt}, nil
 }
 
@@ -243,16 +250,16 @@ func TestMergeReportsChunkReadErrors(t *testing.T) {
 		workers int
 		section int
 	}{
-		// 10 records in chunks of 5: two chunks plus the empty section Save appends.
-		// NumWorkers 4 >= 3 sections merges single-threaded; NumWorkers 2 merges in parallel.
-		{"single-threaded first chunk", 4, 0},
-		{"single-threaded second chunk", 4, 1},
+		// 15 records in chunks of 5 make three chunks. NumWorkers 3 merges them
+		// single-threaded; NumWorkers 2 merges them in parallel.
+		{"single-threaded first chunk", 3, 0},
+		{"single-threaded second chunk", 3, 1},
 		{"parallel first chunk", 2, 0},
 		{"parallel second chunk", 2, 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			tt := &trackedTemp{readErr: map[int]error{tc.section: errDisk}}
-			s := newTrackedSorter(descendingInts(10), itoaBytes, cmp.Compare[int], &Config{ChunkSize: 5, NumWorkers: tc.workers}, tt)
+			s := newTrackedSorter(descendingInts(15), itoaBytes, cmp.Compare[int], &Config{ChunkSize: 5, NumWorkers: tc.workers}, tt)
 			got, err := runSort(t, context.Background(), s)
 			if !errors.Is(err, errDisk) {
 				t.Fatalf("got %d records and error %v, want error %q", len(got), err, errDisk)
@@ -385,16 +392,16 @@ func TestCallbackPanicsBecomeErrors(t *testing.T) {
 // the deferred Close ran after the deferred close(mergeErrChan).
 func TestTempFileCloseErrorIsReported(t *testing.T) {
 	errClose := errors.New("close failed")
-	for _, workers := range []int{4, 2} { // single-threaded and parallel merge
+	for _, workers := range []int{3, 2} { // three chunks: single-threaded and parallel merge
 		t.Run("NumWorkers "+strconv.Itoa(workers), func(t *testing.T) {
 			tt := &trackedTemp{closeErr: errClose}
-			s := newTrackedSorter(descendingInts(10), itoaBytes, cmp.Compare[int], &Config{ChunkSize: 5, NumWorkers: workers}, tt)
+			s := newTrackedSorter(descendingInts(15), itoaBytes, cmp.Compare[int], &Config{ChunkSize: 5, NumWorkers: workers}, tt)
 			got, err := runSort(t, context.Background(), s)
 			if !errors.Is(err, errClose) {
 				t.Fatalf("got error %v, want %q", err, errClose)
 			}
-			if len(got) != 10 || !slices.IsSorted(got) {
-				t.Errorf("got %v, want 1..10 in order", got)
+			if len(got) != 15 || !slices.IsSorted(got) {
+				t.Errorf("got %v, want 1..15 in order", got)
 			}
 		})
 	}
@@ -626,5 +633,239 @@ func TestTempFileCreationErrorIsReportedOnErrChan(t *testing.T) {
 		if err != nil || !slices.Equal(got, []int{1, 2}) {
 			t.Fatalf("got %v, %v; want [1 2], nil", got, err)
 		}
+	})
+}
+
+// buildChunks used to keep looping up to ChunkSize times on the closed input,
+// because a plain break inside the select only left the select.
+func TestBuildChunksStopsWhenInputCloses(t *testing.T) {
+	in := make(chan struct{}, 1)
+	in <- struct{}{}
+	close(in)
+	// Chunks of struct{} need no memory, so a huge ChunkSize only costs loop iterations
+	s := newSorter(in,
+		func([]byte) (struct{}, error) { return struct{}{}, nil },
+		func(struct{}) ([]byte, error) { return nil, nil },
+		func(a, b struct{}) int { return 0 },
+		&Config{ChunkSize: 1 << 30, ChanBuffSize: 1})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel() // stops a spinning buildChunks once the test is over
+	s.sortCtx = ctx
+
+	done := make(chan error, 1)
+	go func() { done <- s.buildChunks() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("buildChunks still running 1s after the input closed")
+	}
+	if c := <-s.chunkChan; c == nil || len(c.data) != 1 {
+		t.Fatalf("got chunk %v, want one chunk with the record", c)
+	}
+	if _, ok := <-s.chunkChan; ok {
+		t.Error("buildChunks sent more than one chunk")
+	}
+}
+
+// BenchmarkSortTenRecords measures a small sort with the default config. The loop
+// on the closed input used to add about 2x ChunkSize (1M) iterations to every sort.
+func BenchmarkSortTenRecords(b *testing.B) {
+	for b.Loop() {
+		in := make(chan int, 10)
+		for i := 10; i > 0; i-- {
+			in <- i
+		}
+		close(in)
+		s, out, errc := Generic(in, atoiBytes, itoaBytes, cmp.Compare[int], nil)
+		s.Sort(context.Background())
+		for range out {
+		}
+		if err := <-errc; err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// mergeConfig used to write defaults into the caller's Config, which raced when one
+// Config was shared by several sorters (run with -race) and surprised callers.
+func TestConfigIsNotModified(t *testing.T) {
+	shared := &Config{} // every zero field used to be overwritten
+	var wg sync.WaitGroup
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			s, out, errc := MockGeneric(descendingInts(3), atoiBytes, itoaBytes, cmp.Compare[int], shared, 0)
+			s.Sort(context.Background())
+			if _, err := drainWithTimeout(t, out, errc); err != nil {
+				t.Error(err)
+			}
+		}()
+	}
+	wg.Wait()
+	if *shared != (Config{}) {
+		t.Errorf("caller's Config was modified: %+v", *shared)
+	}
+}
+
+// Zero buffer sizes mean unbuffered channels; nil and negative values mean the defaults.
+func TestConfigBufferSizes(t *testing.T) {
+	for _, tc := range []struct {
+		name                  string
+		config                *Config
+		wantChunk, wantOutput int
+	}{
+		{"nil config", nil, 1, 1000},
+		{"zero values", &Config{}, 0, 0},
+		{"negative values", &Config{ChanBuffSize: -1, SortedChanBuffSize: -1}, 1, 1000},
+		{"explicit values", &Config{ChanBuffSize: 3, SortedChanBuffSize: 7}, 3, 7},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newSorter[int](nil, atoiBytes, itoaBytes, cmp.Compare[int], tc.config)
+			if got := cap(s.chunkChan); got != tc.wantChunk {
+				t.Errorf("chunk channel buffer = %d, want %d", got, tc.wantChunk)
+			}
+			if got := cap(s.mergeChunkChan); got != tc.wantOutput {
+				t.Errorf("output channel buffer = %d, want %d", got, tc.wantOutput)
+			}
+		})
+	}
+}
+
+// The parallel merge (v1.1.0) calls FromBytes from several goroutines at once, which
+// broke legacy FromBytes functions written for v1.0 that are not safe for concurrent
+// use. New and NewMock now serialize the calls.
+func TestLegacyFromBytesIsNotCalledConcurrently(t *testing.T) {
+	const n = 200
+	in := make(chan SortType, n)
+	for i := n; i > 0; i-- {
+		in <- legacyInt(i)
+	}
+	close(in)
+	var inFlight, maxInFlight atomic.Int32
+	fromBytes := func(b []byte) SortType {
+		now := inFlight.Add(1)
+		defer inFlight.Add(-1)
+		for {
+			seen := maxInFlight.Load()
+			if now <= seen || maxInFlight.CompareAndSwap(seen, now) {
+				break
+			}
+		}
+		time.Sleep(20 * time.Microsecond) // widen the window for overlapping calls
+		v, _ := strconv.Atoi(string(b))
+		return legacyInt(v)
+	}
+	less := func(a, b SortType) bool { return a.(legacyInt) < b.(legacyInt) }
+	// One record per chunk and 4 workers: the parallel merge reads 4 chunks at once
+	sorter, out, errc := NewMock(in, fromBytes, less, &Config{ChunkSize: 1, NumWorkers: 4}, 0)
+	sorter.Sort(context.Background())
+	got, err := drainWithTimeout(t, out, errc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != n {
+		t.Fatalf("got %d records, want %d", len(got), n)
+	}
+	if m := maxInFlight.Load(); m != 1 {
+		t.Errorf("FromBytes ran %d calls at once, want 1", m)
+	}
+}
+
+// Save used to append an empty section after the last chunk, so the merge saw one more
+// chunk than was written and chose the parallel merge for exactly NumWorkers chunks.
+func TestTempFileHasOneSectionPerChunk(t *testing.T) {
+	for _, chunks := range []int{2, 3, 10} {
+		t.Run(strconv.Itoa(chunks)+" chunks", func(t *testing.T) {
+			tt := &trackedTemp{}
+			s := newTrackedSorter(descendingInts(chunks*5), itoaBytes, cmp.Compare[int], &Config{ChunkSize: 5}, tt)
+			got, err := runSort(t, context.Background(), s)
+			if err != nil || len(got) != chunks*5 {
+				t.Fatalf("got %d records, error %v", len(got), err)
+			}
+			tt.mu.Lock()
+			defer tt.mu.Unlock()
+			if tt.sections != chunks {
+				t.Errorf("temp file has %d sections, want %d", tt.sections, chunks)
+			}
+		})
+	}
+}
+
+// BenchmarkSortManyChunks sorts 200k records in 2,000 chunks. Save used to allocate a
+// 64 KiB read buffer for every chunk up front (125 MiB here); they are now sized to the chunk.
+func BenchmarkSortManyChunks(b *testing.B) {
+	const n = 200_000
+	dir := b.TempDir()
+	for b.Loop() {
+		in := make(chan int, 1000)
+		go func() {
+			defer close(in)
+			for i := n; i > 0; i-- {
+				in <- i
+			}
+		}()
+		s, out, errc := Generic(in, atoiBytes, itoaBytes, cmp.Compare[int], &Config{ChunkSize: 100, TempFilesDir: dir})
+		s.Sort(context.Background())
+		for range out {
+		}
+		if err := <-errc; err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// benchmarkInts sorts 1M random ints in chunks of 100k with the sorter that newSorter returns.
+func benchmarkInts(b *testing.B, newSorter func(in chan int, config *Config) (Sorter, <-chan int, <-chan error)) {
+	r := rand.New(rand.NewSource(1))
+	data := make([]int, 1_000_000)
+	for i := range data {
+		data[i] = r.Int()
+	}
+	config := DefaultConfig()
+	config.ChunkSize = 100_000
+	config.TempFilesDir = b.TempDir()
+	b.ResetTimer()
+	for b.Loop() {
+		in := make(chan int, 1000)
+		go func() {
+			defer close(in)
+			for _, v := range data {
+				in <- v
+			}
+		}()
+		s, out, errc := newSorter(in, config)
+		s.Sort(context.Background())
+		for range out {
+		}
+		if err := <-errc; err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// BenchmarkOrderedInts sorts 1M ints with Ordered. Ordered used to gob-encode every record
+// with a new encoder and decoder, which made it much slower than Generic.
+func BenchmarkOrderedInts(b *testing.B) {
+	benchmarkInts(b, func(in chan int, config *Config) (Sorter, <-chan int, <-chan error) {
+		return Ordered(in, config)
+	})
+}
+
+// BenchmarkGenericVarintInts is BenchmarkOrderedInts using Generic with a varint codec.
+func BenchmarkGenericVarintInts(b *testing.B) {
+	toBytes := func(v int) ([]byte, error) { return binary.AppendVarint(nil, int64(v)), nil }
+	fromBytes := func(d []byte) (int, error) {
+		v, n := binary.Varint(d)
+		if n <= 0 {
+			return 0, errors.New("bad varint")
+		}
+		return int(v), nil
+	}
+	benchmarkInts(b, func(in chan int, config *Config) (Sorter, <-chan int, <-chan error) {
+		return Generic(in, fromBytes, toBytes, cmp.Compare[int], config)
 	})
 }

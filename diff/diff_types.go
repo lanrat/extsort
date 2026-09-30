@@ -40,7 +40,7 @@ type Delta int
 const (
 	// NEW indicates an item that exists only in the second stream (B).
 	// This represents a "new" or "added" item when comparing A to B.
-	NEW = iota // +
+	NEW Delta = iota // +
 
 	// OLD indicates an item that exists only in the first stream (A).
 	// This represents an "old" or "removed" item when comparing A to B.

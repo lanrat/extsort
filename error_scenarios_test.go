@@ -153,7 +153,9 @@ func TestLargeDataElements(t *testing.T) {
 	inputChan <- &largeVal{Key: 2, Data: largeString}
 	close(inputChan)
 
-	sort, outChan, errChan := extsort.New(inputChan, fromBytesForLargeVal, largeLessThan, nil)
+	// One element per chunk, so the elements are written to disk and read back
+	config := &extsort.Config{ChunkSize: 1}
+	sort, outChan, errChan := extsort.New(inputChan, fromBytesForLargeVal, largeLessThan, config)
 	sort.Sort(context.Background())
 
 	var results []*largeVal
@@ -304,7 +306,9 @@ func TestMixedTypeComparison(t *testing.T) {
 		panic("unknown type in deserialization")
 	}
 
-	sort, outChan, errChan := extsort.New(inputChan, mixedFromBytes, mixedLessFunc, nil)
+	// One element per chunk, so both types are written to disk and read back with mixedFromBytes
+	config := &extsort.Config{ChunkSize: 1}
+	sort, outChan, errChan := extsort.New(inputChan, mixedFromBytes, mixedLessFunc, config)
 	sort.Sort(context.Background())
 
 	var results []extsort.SortType
