@@ -106,3 +106,82 @@ func TestStringResultChanContextStopsWaiting(t *testing.T) {
 		t.Fatalf("got error %v, want %v", err, context.Canceled)
 	}
 }
+
+// ints returns a closed channel holding n values of start, start+step, ...
+func ints(n, start, step int) chan int {
+	ch := make(chan int, n)
+	for i := range n {
+		ch <- start + i*step
+	}
+	close(ch)
+	return ch
+}
+
+// Reads try a non-blocking receive before selecting on ctx.Done(), so while values are
+// ready ctx is only checked every so often. A cancellation must still stop the diff,
+// including one that happened before the diff started.
+func TestDiffStopsWhenCancelledWithValuesReady(t *testing.T) {
+	closedErr := func() chan error {
+		ch := make(chan error)
+		close(ch)
+		return ch
+	}
+	t.Run("cancelled before", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		calls := 0
+		_, err := diff.Ordered(ctx, ints(10, 0, 2), ints(10, 1, 2), closedErr(), closedErr(), func(diff.Delta, int) error {
+			calls++
+			return nil
+		})
+		if !errors.Is(err, context.Canceled) || calls != 0 {
+			t.Fatalf("got error %v after %d results, want %v before any", err, calls, context.Canceled)
+		}
+	})
+	t.Run("cancelled during", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		const n = 100_000
+		calls := 0
+		r, err := diff.Ordered(ctx, ints(n, 0, 2), ints(n, 1, 2), closedErr(), closedErr(), func(diff.Delta, int) error {
+			calls++
+			if calls == 10 {
+				cancel()
+			}
+			return nil
+		})
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("got error %v, want %v", err, context.Canceled)
+		}
+		if r.TotalA+r.TotalB > 10+2*1024 {
+			t.Errorf("read %d values after the cancel, want at most about 1024 per stream", r.TotalA+r.TotalB-10)
+		}
+	})
+}
+
+// BenchmarkDiffOrdered diffs two streams of 1M ints fed by producer goroutines, with a
+// cancellable context as callers use.
+func BenchmarkDiffOrdered(b *testing.B) {
+	const n = 1_000_000
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	produce := func(start, step int) (chan int, chan error) {
+		ch, errc := make(chan int, 1000), make(chan error)
+		go func() {
+			defer close(errc)
+			defer close(ch)
+			for i := range n {
+				ch <- start + i*step
+			}
+		}()
+		return ch, errc
+	}
+	for b.Loop() {
+		a, aErr := produce(0, 2) // even numbers
+		c, cErr := produce(0, 3) // multiples of 3
+		r, err := diff.Ordered(ctx, a, c, aErr, cErr, func(diff.Delta, int) error { return nil })
+		if err != nil || r.TotalA != n || r.TotalB != n {
+			b.Fatalf("got %s, %v", r.String(), err)
+		}
+	}
+}

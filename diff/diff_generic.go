@@ -5,6 +5,10 @@ import (
 	"fmt"
 )
 
+// ctxCheckInterval is how many values recv reads between checks of the context
+// while its non-blocking receive keeps succeeding.
+const ctxCheckInterval = 1024
+
 // differ is an internal struct that holds the state for performing diff operations
 // between two sorted channels of type T. It manages the comparison logic and
 // result reporting through callback functions.
@@ -14,6 +18,7 @@ type differ[T any] struct {
 	aErrChan, bErrChan <-chan error
 	resultFunc         ResultFunc[T]
 	compare            CompareFunc[T]
+	reads              int // values read by recv
 }
 
 // Generic performs a diff operation on two sorted channels of any comparable type T.
@@ -53,16 +58,12 @@ func (d *differ[T]) diff() (r Result, err error) {
 	var okA, okB bool
 
 	// read from channel A
-	select {
-	case dataA, okA = <-d.aChan:
-	case <-d.ctx.Done():
-		return r, d.ctx.Err()
+	if dataA, okA, err = d.recv(d.aChan); err != nil {
+		return
 	}
 	// read from channel B
-	select {
-	case dataB, okB = <-d.bChan:
-	case <-d.ctx.Done():
-		return r, d.ctx.Err()
+	if dataB, okB, err = d.recv(d.bChan); err != nil {
+		return
 	}
 	for okA && okB {
 		c := d.compare(dataA, dataB)
@@ -73,10 +74,8 @@ func (d *differ[T]) diff() (r Result, err error) {
 			if err != nil {
 				return
 			}
-			select {
-			case dataB, okB = <-d.bChan:
-			case <-d.ctx.Done():
-				return r, d.ctx.Err()
+			if dataB, okB, err = d.recv(d.bChan); err != nil {
+				return
 			}
 		} else if c < 0 {
 			r.TotalA++
@@ -85,25 +84,19 @@ func (d *differ[T]) diff() (r Result, err error) {
 			if err != nil {
 				return
 			}
-			select {
-			case dataA, okA = <-d.aChan:
-			case <-d.ctx.Done():
-				return r, d.ctx.Err()
+			if dataA, okA, err = d.recv(d.aChan); err != nil {
+				return
 			}
 		} else {
 			// common
 			r.Common++
 			r.TotalA++
 			r.TotalB++
-			select {
-			case dataA, okA = <-d.aChan:
-			case <-d.ctx.Done():
-				return r, d.ctx.Err()
+			if dataA, okA, err = d.recv(d.aChan); err != nil {
+				return
 			}
-			select {
-			case dataB, okB = <-d.bChan:
-			case <-d.ctx.Done():
-				return r, d.ctx.Err()
+			if dataB, okB, err = d.recv(d.bChan); err != nil {
+				return
 			}
 		}
 	}
@@ -128,10 +121,8 @@ func (d *differ[T]) diff() (r Result, err error) {
 		if err != nil {
 			return
 		}
-		select {
-		case dataA, okA = <-d.aChan:
-		case <-d.ctx.Done():
-			return r, d.ctx.Err()
+		if dataA, okA, err = d.recv(d.aChan); err != nil {
+			return
 		}
 	}
 	// check for A errors if not read above
@@ -148,10 +139,8 @@ func (d *differ[T]) diff() (r Result, err error) {
 		if err != nil {
 			return
 		}
-		select {
-		case dataB, okB = <-d.bChan:
-		case <-d.ctx.Done():
-			return r, d.ctx.Err()
+		if dataB, okB, err = d.recv(d.bChan); err != nil {
+			return
 		}
 	}
 	// check for B errors if not read above
@@ -161,6 +150,30 @@ func (d *differ[T]) diff() (r Result, err error) {
 		}
 	}
 	return
+}
+
+// recv reads the next value from ch. It tries a non-blocking receive first: unlike a
+// select with ctx.Done(), that does not lock the context's channel, so a stream with a
+// value ready costs one channel operation. ctx is then checked every ctxCheckInterval
+// values, starting with the first, and whenever ch has nothing ready.
+func (d *differ[T]) recv(ch <-chan T) (v T, ok bool, err error) {
+	if d.reads%ctxCheckInterval == 0 {
+		if err := d.ctx.Err(); err != nil {
+			return v, false, err
+		}
+	}
+	d.reads++
+	select {
+	case v, ok = <-ch:
+		return v, ok, nil
+	default:
+	}
+	select {
+	case v, ok = <-ch:
+		return v, ok, nil
+	case <-d.ctx.Done():
+		return v, false, d.ctx.Err()
+	}
 }
 
 // readErr waits for the error from a stream whose data channel has closed.

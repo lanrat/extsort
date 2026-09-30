@@ -89,8 +89,9 @@ func drainWithTimeout[E any](t *testing.T, out <-chan E, errc <-chan error) ([]E
 // trackedTemp hands out in-memory temp files and counts how many the sorter
 // leaves open. readErr and closeErr inject failures.
 type trackedTemp struct {
-	readErr  map[int]error // section index -> error returned when reading it
-	closeErr error         // returned by the reader's Close
+	readErr      map[int]error // section index -> error returned when reading it
+	readErrAfter map[int]int64 // section index -> bytes it reads before its readErr, 0 if unset
+	closeErr     error         // returned by the reader's Close
 
 	mu       sync.Mutex
 	created  int
@@ -152,7 +153,8 @@ type trackedReader struct {
 
 func (r *trackedReader) Read(i int) *bufio.Reader {
 	if err, ok := r.tt.readErr[i]; ok {
-		return bufio.NewReader(iotest.ErrReader(err))
+		valid := io.LimitReader(r.TempReader.Read(i), r.tt.readErrAfter[i])
+		return bufio.NewReader(io.MultiReader(valid, iotest.ErrReader(err)))
 	}
 	return r.TempReader.Read(i)
 }
@@ -377,12 +379,12 @@ func TestCallbackPanicsBecomeErrors(t *testing.T) {
 
 	t.Run("compare in final merge", func(t *testing.T) {
 		s := newSorter(nil, atoiBytes, itoaBytes, panicCompare, nil)
-		a, b := make(chan int, 1), make(chan int, 1)
-		a <- 1
-		b <- 2
-		close(a)
-		close(b)
-		if err := s.finalMergeSimple(context.Background(), []chan int{a, b}); !errors.As(err, &cmpErr) {
+		a, b := newMergeStream[int](), newMergeStream[int]()
+		a.batches <- []int{1}
+		b.batches <- []int{2}
+		close(a.batches)
+		close(b.batches)
+		if err := s.finalMergeSimple(context.Background(), []mergeStream[int]{a, b}); !errors.As(err, &cmpErr) {
 			t.Fatalf("got error %v, want a ComparisonError", err)
 		}
 	})

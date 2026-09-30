@@ -15,6 +15,19 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
+const (
+	// ctxCheckInterval is how many records a loop handles between checks of its context
+	// while a non-blocking receive keeps succeeding, since that path never selects on ctx.Done().
+	ctxCheckInterval = 1024
+	// firstChunkCap is the capacity a chunk starts with before the input has filled a chunk.
+	firstChunkCap = 1024
+	// mergeBatchSize is how many records a merge worker hands to the final merge at a time.
+	// Sending records one per channel operation made the handoffs cost more than the merge.
+	mergeBatchSize = 1024
+	// mergeBatchBuffer is how many full batches a merge worker can queue for the final merge.
+	mergeBatchBuffer = 2
+)
+
 // genericChunk represents a collection of any data that can be sorted.
 // It holds data in memory before being sorted using slices.SortFunc.
 type genericChunk[E any] struct {
@@ -48,10 +61,8 @@ func (s *GenericSorter[E]) putChunk(c *genericChunk[E]) {
 
 // memoryPools holds sync.Pool instances for memory reuse
 type memoryPools struct {
-	chunkPool     sync.Pool // *chunk objects
-	slicePool     sync.Pool // []any slices
-	byteSlicePool sync.Pool // []byte slices for serialization
-	scratchPool   sync.Pool // scratch buffers for binary encoding
+	chunkPool sync.Pool // *chunk objects
+	slicePool sync.Pool // []E slices
 }
 
 // GenericSorter implements external sorting for any type E using a divide-and-conquer approach.
@@ -75,6 +86,26 @@ type GenericSorter[E any] struct {
 	toBytes        ToBytesGeneric[E]
 	pools          *memoryPools
 	singleChunk    *genericChunk[E] // Holds the single chunk for optimization
+	// Set by useBuiltinCodec for the package's own codecs only
+	appendBytes     appendBytesFunc[E] // encodes into a reused buffer instead of toBytes
+	reuseReadBuffer bool               // fromBytes never keeps its input, so the merge reuses one buffer
+}
+
+// appendBytesFunc appends the encoding of v to dst and returns the extended slice.
+type appendBytesFunc[E any] func(dst []byte, v E) []byte
+
+// useBuiltinCodec makes the sorter reuse buffers with one of the package's own codecs:
+// records are encoded with appendBytes into one reused buffer, and the merge decodes all the
+// records of a chunk from one reused buffer. The second is only safe because those fromBytes
+// functions never keep the slice they are given; a user's FromBytesGeneric may.
+func (s *GenericSorter[E]) useBuiltinCodec(appendBytes appendBytesFunc[E]) {
+	s.appendBytes = appendBytes
+	s.reuseReadBuffer = true
+}
+
+// toBytesFunc returns the ToBytesGeneric form of appendBytes.
+func toBytesFunc[E any](appendBytes appendBytesFunc[E]) ToBytesGeneric[E] {
+	return func(v E) ([]byte, error) { return appendBytes(nil, v), nil }
 }
 
 // newSorter creates a new GenericSorter instance with the given configuration.
@@ -98,7 +129,7 @@ func newSorter[E any](input <-chan E, fromBytes FromBytesGeneric[E], toBytes ToB
 }
 
 // initMemoryPools initializes sync.Pool instances for efficient memory reuse during sorting.
-// Creates pools for chunks, slices, byte slices, and scratch buffers to reduce GC pressure
+// Creates pools for chunks and their slices to reduce GC pressure
 // and improve performance during high-frequency allocation/deallocation cycles.
 func (s *GenericSorter[E]) initMemoryPools() *memoryPools {
 	pools := &memoryPools{}
@@ -110,27 +141,11 @@ func (s *GenericSorter[E]) initMemoryPools() *memoryPools {
 		},
 	}
 
-	// Pool for slices - store pointers to slices
+	// Pool for slices - store pointers to slices. New slices start empty and
+	// buildChunks grows them, so a small input does not allocate a full ChunkSize slice.
 	pools.slicePool = sync.Pool{
 		New: func() any {
-			slice := make([]E, 0, s.config.ChunkSize)
-			return &slice
-		},
-	}
-
-	// Pool for byte slices (for serialization) - store pointers to slices
-	pools.byteSlicePool = sync.Pool{
-		New: func() any {
-			slice := make([]byte, 0, 1024) // Start with 1KB capacity
-			return &slice
-		},
-	}
-
-	// Pool for scratch buffers (for binary encoding) - store pointers to slices
-	pools.scratchPool = sync.Pool{
-		New: func() any {
-			slice := make([]byte, binary.MaxVarintLen64)
-			return &slice
+			return new([]E)
 		},
 	}
 
@@ -269,21 +284,42 @@ func (s *GenericSorter[E]) closeTempFiles() {
 func (s *GenericSorter[E]) buildChunks() error {
 	defer close(s.chunkChan) // if this is not called on error, causes a deadlock
 
+	// Set once a chunk fills: the input spans several chunks, so new chunk slices
+	// are allocated at their full size instead of grown.
+	spansChunks := false
 	for inputOpen := true; inputOpen; {
 		c := s.getChunk()
 	fill:
 		for i := 0; i < s.config.ChunkSize; i++ {
+			var rec E
+			var ok bool
+			// Try a non-blocking receive first: unlike the select below it does not lock
+			// the context's channel, so a steady input costs one channel operation per record
 			select {
-			case rec, ok := <-s.input:
-				if !ok {
-					inputOpen = false
-					break fill // a plain break would only leave the select
+			case rec, ok = <-s.input:
+				if i%ctxCheckInterval == ctxCheckInterval-1 && s.sortCtx.Err() != nil {
+					s.putChunk(c) // Return unused chunk to pool
+					return s.sortCtx.Err()
 				}
-				c.data = append(c.data, rec)
-			case <-s.sortCtx.Done():
-				s.putChunk(c) // Return unused chunk to pool
-				return s.sortCtx.Err()
+			default:
+				select {
+				case rec, ok = <-s.input:
+				case <-s.sortCtx.Done():
+					s.putChunk(c) // Return unused chunk to pool
+					return s.sortCtx.Err()
+				}
 			}
+			if !ok {
+				inputOpen = false
+				break fill
+			}
+			if len(c.data) == cap(c.data) {
+				c.data = s.growChunk(c.data, spansChunks)
+			}
+			c.data = append(c.data, rec)
+		}
+		if len(c.data) == s.config.ChunkSize {
+			spansChunks = true
 		}
 		if len(c.data) == 0 {
 			// the chunk is empty, return it to pool
@@ -301,6 +337,19 @@ func (s *GenericSorter[E]) buildChunks() error {
 	}
 
 	return nil
+}
+
+// growChunk returns data with room for at least one more record, up to ChunkSize. The first
+// chunk doubles from firstChunkCap, so a small input only allocates what it needs; once the
+// input has filled a chunk (full), a chunk grows straight to ChunkSize.
+func (s *GenericSorter[E]) growChunk(data []E, full bool) []E {
+	newCap := s.config.ChunkSize
+	if !full {
+		newCap = min(newCap, max(2*cap(data), firstChunkCap))
+	}
+	grown := make([]E, len(data), newCap) // exact capacity: append could grow past ChunkSize
+	copy(grown, data)
+	return grown
 }
 
 // sortChunks is a worker for sorting the data stored in a chunk prior to save
@@ -460,39 +509,61 @@ func (s *GenericSorter[E]) saveChunksOptimized() error {
 	}
 }
 
-// saveChunk processes a single chunk
+// saveChunk writes a sorted chunk as the next section of the temp file, each record as a
+// uvarint length followed by its encoding, and returns the chunk to the pool.
 func (s *GenericSorter[E]) saveChunk(b *genericChunk[E]) error {
-	scratchPtr := s.pools.scratchPool.Get().(*[]byte)
-	scratch := *scratchPtr
-	defer s.pools.scratchPool.Put(scratchPtr)
+	defer s.putChunk(b)
 
-	for _, d := range b.data {
-		// binary encoding for size
+	var err error
+	if s.appendBytes != nil {
+		err = s.writeAppended(b.data)
+	} else {
+		err = s.writeEncoded(b.data)
+	}
+	if err != nil {
+		return err
+	}
+	if _, err := s.tempWriter.Next(); err != nil {
+		return NewDiskError(err, "next chunk", "")
+	}
+	return nil
+}
+
+// writeEncoded writes records encoded by toBytes.
+func (s *GenericSorter[E]) writeEncoded(records []E) error {
+	var header [binary.MaxVarintLen64]byte
+	for _, d := range records {
 		raw, err := s.encode(d)
 		if err != nil {
-			s.putChunk(b) // Return chunk to pool on error
 			return err
 		}
-		n := binary.PutUvarint(scratch, uint64(len(raw)))
-		_, err = s.tempWriter.Write(scratch[:n])
-		if err != nil {
-			s.putChunk(b) // Return chunk to pool on error
+		n := binary.PutUvarint(header[:], uint64(len(raw)))
+		if _, err := s.tempWriter.Write(header[:n]); err != nil {
 			return NewDiskError(err, "write size header", "")
 		}
-		// add data
-		_, err = s.tempWriter.Write(raw)
-		if err != nil {
-			s.putChunk(b) // Return chunk to pool on error
+		if _, err := s.tempWriter.Write(raw); err != nil {
 			return NewDiskError(err, "write data", "")
 		}
 	}
-	_, err := s.tempWriter.Next()
-	if err != nil {
-		s.putChunk(b) // Return chunk to pool on error
-		return NewDiskError(err, "next chunk", "")
+	return nil
+}
+
+// writeAppended writes records encoded by appendBytes into one reused buffer. Each record
+// is appended after room for the longest length header, and the header is then put just
+// before it, so a record and its header go out in a single Write.
+func (s *GenericSorter[E]) writeAppended(records []E) error {
+	const room = binary.MaxVarintLen64
+	buf := make([]byte, room, 256)
+	var header [room]byte
+	for _, d := range records {
+		buf = s.appendBytes(buf[:room], d)
+		n := binary.PutUvarint(header[:], uint64(len(buf)-room))
+		start := room - n
+		copy(buf[start:], header[:n])
+		if _, err := s.tempWriter.Write(buf[start:]); err != nil {
+			return NewDiskError(err, "write data", "")
+		}
 	}
-	// Successfully processed chunk, return to pool
-	s.putChunk(b)
 	return nil
 }
 
@@ -557,10 +628,7 @@ func (s *GenericSorter[E]) mergeNChunksSingleThreaded(ctx context.Context) (err 
 	})
 
 	for i := 0; i < s.tempReader.Size(); i++ {
-		merge := &mergeFile[E]{
-			fromBytes: s.fromBytes,
-			reader:    s.tempReader.Read(i),
-		}
+		merge := s.newMergeFile(i)
 		_, ok, err := merge.getNext() // start the merge by preloading the values
 		if err != nil {
 			return err
@@ -601,11 +669,10 @@ func (s *GenericSorter[E]) mergeNChunksParallel(ctx context.Context) error {
 	mergeCtx, mergeCancel := context.WithCancel(ctx)
 	defer mergeCancel() // Ensure all goroutines stop when this function returns
 
-	// Create intermediate channels for each worker
-	intermediateChanSize := s.config.SortedChanBuffSize
-	intermediateChans := make([]chan E, numWorkers)
-	for i := range intermediateChans {
-		intermediateChans[i] = make(chan E, intermediateChanSize)
+	// Create a stream for each worker to pass its merged records to the final merge in batches
+	streams := make([]mergeStream[E], numWorkers)
+	for i := range streams {
+		streams[i] = newMergeStream[E]()
 	}
 
 	// Error collection
@@ -630,15 +697,15 @@ func (s *GenericSorter[E]) mergeNChunksParallel(ctx context.Context) error {
 		workersStarted++
 		wg.Add(1)
 
-		go func(workerIdx, start, end int) {
+		go func(stream mergeStream[E], start, end int) {
 			defer wg.Done()
-			defer close(intermediateChans[workerIdx]) // Each worker closes its own channel
+			defer close(stream.batches) // Each worker closes its own channel
 
-			if err := s.mergeWorkerSimple(mergeCtx, start, end, intermediateChans[workerIdx]); err != nil {
+			if err := s.mergeWorkerSimple(mergeCtx, start, end, stream); err != nil {
 				errChan <- err
 				mergeCancel() // Cancel all operations on error
 			}
-		}(i, startChunk, endChunk)
+		}(streams[i], startChunk, endChunk)
 	}
 
 	// Start error collector with wait group for synchronization
@@ -661,7 +728,7 @@ func (s *GenericSorter[E]) mergeNChunksParallel(ctx context.Context) error {
 	finalMergeWg.Add(1)
 	go func() {
 		defer finalMergeWg.Done()
-		if err := s.finalMergeSimple(mergeCtx, intermediateChans[:workersStarted]); err != nil {
+		if err := s.finalMergeSimple(mergeCtx, streams[:workersStarted]); err != nil {
 			errChan <- err
 			mergeCancel() // Stop the workers, which may be blocked sending to the final merge
 		}
@@ -685,8 +752,46 @@ func (s *GenericSorter[E]) mergeNChunksParallel(ctx context.Context) error {
 	return ctx.Err()
 }
 
+// mergeStream carries one merge worker's records to the final merge in batches.
+type mergeStream[E any] struct {
+	batches chan []E // batches of records in merge order, closed when the worker stops
+	free    chan []E // used-up batches handed back to the worker for reuse
+}
+
+func newMergeStream[E any]() mergeStream[E] {
+	return mergeStream[E]{
+		batches: make(chan []E, mergeBatchBuffer),
+		// room for every batch a worker has: those queued, the one it fills and the one being merged
+		free: make(chan []E, mergeBatchBuffer+2),
+	}
+}
+
+// emptyBatch returns a batch to fill, reusing one the final merge handed back if there is one.
+func (m mergeStream[E]) emptyBatch() []E {
+	select {
+	case batch := <-m.free:
+		return batch[:0]
+	default:
+		return make([]E, 0, mergeBatchSize)
+	}
+}
+
+// send queues a batch for the final merge. Once ctx is done it returns ctx's error instead,
+// so a worker stops at its next batch after a cancellation.
+func (m mergeStream[E]) send(ctx context.Context, batch []E) error {
+	if err := ctx.Err(); err != nil {
+		return err // the select below picks at random when the channel has room too
+	}
+	select {
+	case m.batches <- batch:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 // mergeWorkerSimple merges a subset of chunks with proper context handling
-func (s *GenericSorter[E]) mergeWorkerSimple(ctx context.Context, startChunk, endChunk int, output chan<- E) (err error) {
+func (s *GenericSorter[E]) mergeWorkerSimple(ctx context.Context, startChunk, endChunk int, output mergeStream[E]) (err error) {
 	// A panicking compareFunc must not crash the process from this goroutine
 	defer func() {
 		if r := recover(); r != nil {
@@ -700,10 +805,7 @@ func (s *GenericSorter[E]) mergeWorkerSimple(ctx context.Context, startChunk, en
 
 	// Initialize merge files for this worker's chunk range
 	for i := startChunk; i < endChunk; i++ {
-		merge := &mergeFile[E]{
-			fromBytes: s.fromBytes,
-			reader:    s.tempReader.Read(i),
-		}
+		merge := s.newMergeFile(i)
 		_, ok, err := merge.getNext()
 		if err != nil {
 			return err
@@ -714,15 +816,9 @@ func (s *GenericSorter[E]) mergeWorkerSimple(ctx context.Context, startChunk, en
 		pq.Push(merge)
 	}
 
-	// Merge this worker's chunks
+	// Merge this worker's chunks, checking ctx as each batch is sent
+	batch := output.emptyBatch()
 	for pq.Len() > 0 {
-		// Check context before processing
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-		}
-
 		merge := pq.Peek()
 		rec, more, err := merge.getNext()
 		if err != nil {
@@ -734,19 +830,23 @@ func (s *GenericSorter[E]) mergeWorkerSimple(ctx context.Context, startChunk, en
 			pq.Pop()
 		}
 
-		select {
-		case output <- rec:
-		case <-ctx.Done():
-			return ctx.Err()
+		batch = append(batch, rec)
+		if len(batch) == mergeBatchSize {
+			if err := output.send(ctx, batch); err != nil {
+				return err
+			}
+			batch = output.emptyBatch()
 		}
 	}
-
+	if len(batch) > 0 {
+		return output.send(ctx, batch)
+	}
 	return nil
 }
 
 // finalMergeSimple performs streaming merge with simpler synchronization.
 // It returns nil when ctx is cancelled; the caller reports the cancellation.
-func (s *GenericSorter[E]) finalMergeSimple(ctx context.Context, intermediateChans []chan E) (err error) {
+func (s *GenericSorter[E]) finalMergeSimple(ctx context.Context, streams []mergeStream[E]) (err error) {
 	// A panicking compareFunc must not crash the process from this goroutine
 	defer func() {
 		if r := recover(); r != nil {
@@ -759,8 +859,8 @@ func (s *GenericSorter[E]) finalMergeSimple(ctx context.Context, intermediateCha
 	})
 
 	// Initialize sources
-	for _, ch := range intermediateChans {
-		source := &channelMergeSource[E]{ch: ch}
+	for _, stream := range streams {
+		source := &channelMergeSource[E]{stream: stream}
 		if source.getNextSimple() {
 			pq.Push(source)
 		}
@@ -792,23 +892,51 @@ func (s *GenericSorter[E]) finalMergeSimple(ctx context.Context, intermediateCha
 	return nil
 }
 
-// channelMergeSource represents a source of sorted data from a channel
+// channelMergeSource represents a source of sorted data from a merge worker's stream
 type channelMergeSource[E any] struct {
-	ch      <-chan E
+	stream  mergeStream[E]
+	batch   []E // the batch being merged
+	pos     int // index in batch of the record after nextRec
 	nextRec E
-	hasNext bool
 }
 
-// getNextSimple reads from channel without context (channel close handles cancellation)
+// getNextSimple advances to the next record, receiving the next batch once the current one
+// is used up. It reads without context: the worker closes its channel when it stops.
 func (c *channelMergeSource[E]) getNextSimple() bool {
-	rec, ok := <-c.ch
-	if ok {
-		c.nextRec = rec
-		c.hasNext = true
-		return true
+	for c.pos == len(c.batch) {
+		c.releaseBatch()
+		batch, ok := <-c.stream.batches
+		if !ok {
+			return false
+		}
+		c.batch, c.pos = batch, 0
 	}
-	c.hasNext = false
-	return false
+	c.nextRec = c.batch[c.pos]
+	c.pos++
+	return true
+}
+
+// releaseBatch hands the used-up batch back to the worker, or drops it if the worker
+// already has enough spare batches.
+func (c *channelMergeSource[E]) releaseBatch() {
+	if c.batch == nil {
+		return
+	}
+	clear(c.batch) // the records were sent on; don't keep them reachable from a spare batch
+	select {
+	case c.stream.free <- c.batch:
+	default:
+	}
+	c.batch = nil
+}
+
+// newMergeFile returns a mergeFile reading section i of the temp file.
+func (s *GenericSorter[E]) newMergeFile(i int) *mergeFile[E] {
+	return &mergeFile[E]{
+		fromBytes: s.fromBytes,
+		reader:    s.tempReader.Read(i),
+		reuseBuf:  s.reuseReadBuffer,
+	}
 }
 
 // mergeFile represents each sorted chunk on disk and its next value
@@ -816,6 +944,8 @@ type mergeFile[E any] struct {
 	nextRec   E
 	fromBytes FromBytesGeneric[E]
 	reader    *bufio.Reader
+	reuseBuf  bool   // fromBytes never keeps its input, so every record can be read into buf
+	buf       []byte // holds the last record read when reuseBuf is set
 }
 
 // getNext returns the next value from the sorted chunk on disk.
@@ -831,7 +961,15 @@ func (m *mergeFile[E]) getNext() (E, bool, error) {
 	if err != nil {
 		return old, false, err
 	}
-	newRecBytes := make([]byte, int(n))
+	var newRecBytes []byte
+	if m.reuseBuf {
+		if uint64(cap(m.buf)) < n {
+			m.buf = make([]byte, int(n))
+		}
+		newRecBytes = m.buf[:n]
+	} else {
+		newRecBytes = make([]byte, int(n))
+	}
 	if _, err := io.ReadFull(m.reader, newRecBytes); err != nil {
 		if err == io.EOF {
 			// a length header without its payload is a truncated record, not the end of the chunk
