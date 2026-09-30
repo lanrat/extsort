@@ -48,10 +48,9 @@ func (s *GenericSorter[E]) putChunk(c *genericChunk[E]) {
 
 // memoryPools holds sync.Pool instances for memory reuse
 type memoryPools struct {
-	chunkPool     sync.Pool // *chunk objects
-	slicePool     sync.Pool // []any slices
-	byteSlicePool sync.Pool // []byte slices for serialization
-	scratchPool   sync.Pool // scratch buffers for binary encoding
+	chunkPool   sync.Pool // *chunk objects
+	slicePool   sync.Pool // []any slices
+	scratchPool sync.Pool // scratch buffers for binary encoding
 }
 
 // GenericSorter implements external sorting for any type E using a divide-and-conquer approach.
@@ -98,7 +97,7 @@ func newSorter[E any](input <-chan E, fromBytes FromBytesGeneric[E], toBytes ToB
 }
 
 // initMemoryPools initializes sync.Pool instances for efficient memory reuse during sorting.
-// Creates pools for chunks, slices, byte slices, and scratch buffers to reduce GC pressure
+// Creates pools for chunks, slices, and scratch buffers to reduce GC pressure
 // and improve performance during high-frequency allocation/deallocation cycles.
 func (s *GenericSorter[E]) initMemoryPools() *memoryPools {
 	pools := &memoryPools{}
@@ -114,14 +113,6 @@ func (s *GenericSorter[E]) initMemoryPools() *memoryPools {
 	pools.slicePool = sync.Pool{
 		New: func() any {
 			slice := make([]E, 0, s.config.ChunkSize)
-			return &slice
-		},
-	}
-
-	// Pool for byte slices (for serialization) - store pointers to slices
-	pools.byteSlicePool = sync.Pool{
-		New: func() any {
-			slice := make([]byte, 0, 1024) // Start with 1KB capacity
 			return &slice
 		},
 	}
