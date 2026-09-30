@@ -87,7 +87,7 @@ func TestTempFileRepeat(t *testing.T) {
 	// via the file handle, so we don't check for file existence here
 
 	s := tempReader.Size()
-	if s != iterations+1 {
+	if s != iterations {
 		t.Fatalf("tempReader.Size returned %d, expected %d", s, iterations)
 	}
 
@@ -175,7 +175,7 @@ func TestMockFileMultiSection(t *testing.T) {
 	}
 
 	s := tempReader.Size()
-	if s != iterations+1 {
+	if s != iterations {
 		t.Fatalf("tempReader.Size returned %d, expected %d", s, iterations)
 	}
 

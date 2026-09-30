@@ -49,6 +49,7 @@ type FileWriter struct {
 	file         *os.File
 	bufWriter    *bufio.Writer
 	sections     []int64
+	pending      bool   // data was written since the last Next
 	needsCleanup bool   // true if manual cleanup is needed (Windows)
 	createdDir   string // directory we created (for cleanup)
 }
@@ -110,11 +111,14 @@ func New(dir string, preferDiskBacked bool) (*FileWriter, error) {
 	return &w, nil
 }
 
-// Size returns the total number of virtual file sections created.
-// This includes the current section being written plus all completed sections.
+// Size returns the number of virtual file sections Save will produce: all completed
+// sections, plus the current one if anything was written to it. A writer with no data
+// has one empty section.
 func (w *FileWriter) Size() int {
-	// we add one because we only write to the sections when we are done
-	return len(w.sections) + 1
+	if w.pending || len(w.sections) == 0 {
+		return len(w.sections) + 1
+	}
+	return len(w.sections)
 }
 
 // Name returns the full filesystem path of the underlying physical temporary file.
@@ -152,13 +156,21 @@ func (w *FileWriter) Close() error {
 // Write appends data to the current virtual file section.
 // Data is buffered for efficiency and will be flushed when Next() or Save() is called.
 func (w *FileWriter) Write(p []byte) (int, error) {
-	return w.bufWriter.Write(p)
+	n, err := w.bufWriter.Write(p)
+	if n > 0 {
+		w.pending = true
+	}
+	return n, err
 }
 
 // WriteString appends a string to the current virtual file section.
 // This is more efficient than Write() for string data as it avoids byte slice conversion.
 func (w *FileWriter) WriteString(s string) (int, error) {
-	return w.bufWriter.WriteString(s)
+	n, err := w.bufWriter.WriteString(s)
+	if n > 0 {
+		w.pending = true
+	}
+	return n, err
 }
 
 // Next finalizes the current virtual file section and prepares for writing the next section.
@@ -175,19 +187,25 @@ func (w *FileWriter) Next() (int64, error) {
 		return 0, err
 	}
 	w.sections = append(w.sections, pos)
+	w.pending = false
 
 	return pos, nil
 }
 
 // Save finalizes all virtual file sections and returns a TempReader for accessing the data.
+// The current section becomes the last one only if anything was written to it, so a
+// Next after the final section does not add an empty section.
 // After calling Save(), the FileWriter can no longer be used for writing.
 // The returned TempReader allows concurrent access to any virtual file section.
 func (w *FileWriter) Save() (TempReader, error) {
 	// No Sync: the file is only read back by this process, and on Unix it is already
 	// unlinked, so flushing it to stable storage only costs time.
-	_, err := w.Next()
-	if err != nil {
-		return nil, err
+	var err error
+	if w.pending || len(w.sections) == 0 {
+		// Next also flushes; otherwise the last Next already did
+		if _, err = w.Next(); err != nil {
+			return nil, err
+		}
 	}
 
 	var r *fileReader

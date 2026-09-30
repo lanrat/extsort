@@ -90,9 +90,10 @@ type trackedTemp struct {
 	readErr  map[int]error // section index -> error returned when reading it
 	closeErr error         // returned by the reader's Close
 
-	mu      sync.Mutex
-	created int
-	closed  int
+	mu       sync.Mutex
+	created  int
+	closed   int
+	sections int // Size of the last reader returned by Save
 }
 
 func (tt *trackedTemp) newWriter() (tempfile.TempWriter, error) {
@@ -136,6 +137,9 @@ func (w *trackedWriter) Save() (tempfile.TempReader, error) {
 	if err != nil {
 		return nil, err
 	}
+	w.tt.mu.Lock()
+	w.tt.sections = r.Size()
+	w.tt.mu.Unlock()
 	return &trackedReader{TempReader: r, tt: w.tt}, nil
 }
 
@@ -244,16 +248,16 @@ func TestMergeReportsChunkReadErrors(t *testing.T) {
 		workers int
 		section int
 	}{
-		// 10 records in chunks of 5: two chunks plus the empty section Save appends.
-		// NumWorkers 4 >= 3 sections merges single-threaded; NumWorkers 2 merges in parallel.
-		{"single-threaded first chunk", 4, 0},
-		{"single-threaded second chunk", 4, 1},
+		// 15 records in chunks of 5 make three chunks. NumWorkers 3 merges them
+		// single-threaded; NumWorkers 2 merges them in parallel.
+		{"single-threaded first chunk", 3, 0},
+		{"single-threaded second chunk", 3, 1},
 		{"parallel first chunk", 2, 0},
 		{"parallel second chunk", 2, 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			tt := &trackedTemp{readErr: map[int]error{tc.section: errDisk}}
-			s := newTrackedSorter(descendingInts(10), itoaBytes, cmp.Compare[int], &Config{ChunkSize: 5, NumWorkers: tc.workers}, tt)
+			s := newTrackedSorter(descendingInts(15), itoaBytes, cmp.Compare[int], &Config{ChunkSize: 5, NumWorkers: tc.workers}, tt)
 			got, err := runSort(t, context.Background(), s)
 			if !errors.Is(err, errDisk) {
 				t.Fatalf("got %d records and error %v, want error %q", len(got), err, errDisk)
@@ -386,16 +390,16 @@ func TestCallbackPanicsBecomeErrors(t *testing.T) {
 // the deferred Close ran after the deferred close(mergeErrChan).
 func TestTempFileCloseErrorIsReported(t *testing.T) {
 	errClose := errors.New("close failed")
-	for _, workers := range []int{4, 2} { // single-threaded and parallel merge
+	for _, workers := range []int{3, 2} { // three chunks: single-threaded and parallel merge
 		t.Run("NumWorkers "+strconv.Itoa(workers), func(t *testing.T) {
 			tt := &trackedTemp{closeErr: errClose}
-			s := newTrackedSorter(descendingInts(10), itoaBytes, cmp.Compare[int], &Config{ChunkSize: 5, NumWorkers: workers}, tt)
+			s := newTrackedSorter(descendingInts(15), itoaBytes, cmp.Compare[int], &Config{ChunkSize: 5, NumWorkers: workers}, tt)
 			got, err := runSort(t, context.Background(), s)
 			if !errors.Is(err, errClose) {
 				t.Fatalf("got error %v, want %q", err, errClose)
 			}
-			if len(got) != 10 || !slices.IsSorted(got) {
-				t.Errorf("got %v, want 1..10 in order", got)
+			if len(got) != 15 || !slices.IsSorted(got) {
+				t.Errorf("got %v, want 1..15 in order", got)
 			}
 		})
 	}
@@ -766,5 +770,25 @@ func TestLegacyFromBytesIsNotCalledConcurrently(t *testing.T) {
 	}
 	if m := maxInFlight.Load(); m != 1 {
 		t.Errorf("FromBytes ran %d calls at once, want 1", m)
+	}
+}
+
+// Save used to append an empty section after the last chunk, so the merge saw one more
+// chunk than was written and chose the parallel merge for exactly NumWorkers chunks.
+func TestTempFileHasOneSectionPerChunk(t *testing.T) {
+	for _, chunks := range []int{2, 3, 10} {
+		t.Run(strconv.Itoa(chunks)+" chunks", func(t *testing.T) {
+			tt := &trackedTemp{}
+			s := newTrackedSorter(descendingInts(chunks*5), itoaBytes, cmp.Compare[int], &Config{ChunkSize: 5}, tt)
+			got, err := runSort(t, context.Background(), s)
+			if err != nil || len(got) != chunks*5 {
+				t.Fatalf("got %d records, error %v", len(got), err)
+			}
+			tt.mu.Lock()
+			defer tt.mu.Unlock()
+			if tt.sections != chunks {
+				t.Errorf("temp file has %d sections, want %d", tt.sections, chunks)
+			}
+		})
 	}
 }

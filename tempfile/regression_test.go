@@ -3,6 +3,7 @@ package tempfile
 // Regression tests for temp directory selection and cleanup.
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -146,5 +147,66 @@ func BenchmarkWriteAndSave(b *testing.B) {
 		if err := r.Close(); err != nil {
 			b.Fatal(err)
 		}
+	}
+}
+
+// Save used to end the current section even when nothing was written since the last
+// Next, adding an empty section after the last one.
+func TestSaveAddsNoEmptySection(t *testing.T) {
+	writers := map[string]func(t *testing.T) TempWriter{
+		"FileWriter": func(t *testing.T) TempWriter {
+			w, err := New(t.TempDir(), true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return w
+		},
+		"MockFileWriter": func(*testing.T) TempWriter { return Mock(0) },
+	}
+	for name, newWriter := range writers {
+		t.Run(name, func(t *testing.T) {
+			for _, tc := range []struct {
+				name     string
+				sections []string // each ended by Next
+				trailing string   // written after the last Next
+				want     []string
+			}{
+				{"Next after every section", []string{"a", "b"}, "", []string{"a", "b"}},
+				{"data after the last Next", []string{"a", "b"}, "c", []string{"a", "b", "c"}},
+				{"nothing written", nil, "", []string{""}},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					w := newWriter(t)
+					for _, data := range tc.sections {
+						if _, err := w.WriteString(data); err != nil {
+							t.Fatal(err)
+						}
+						if _, err := w.Next(); err != nil {
+							t.Fatal(err)
+						}
+					}
+					if _, err := w.WriteString(tc.trailing); err != nil {
+						t.Fatal(err)
+					}
+					if got := w.Size(); got != len(tc.want) {
+						t.Errorf("writer Size() = %d, want %d", got, len(tc.want))
+					}
+					r, err := w.Save()
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer func() { _ = r.Close() }()
+					if got := r.Size(); got != len(tc.want) {
+						t.Fatalf("reader Size() = %d, want %d", got, len(tc.want))
+					}
+					for i, want := range tc.want {
+						got, err := io.ReadAll(r.Read(i))
+						if err != nil || string(got) != want {
+							t.Errorf("section %d = %q, %v; want %q", i, got, err, want)
+						}
+					}
+				})
+			}
+		})
 	}
 }
