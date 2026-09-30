@@ -19,6 +19,8 @@ const (
 	// ctxCheckInterval is how many records a loop handles between checks of its context
 	// while a non-blocking receive keeps succeeding, since that path never selects on ctx.Done().
 	ctxCheckInterval = 1024
+	// firstChunkCap is the capacity a chunk starts with before the input has filled a chunk.
+	firstChunkCap = 1024
 	// mergeBatchSize is how many records a merge worker hands to the final merge at a time.
 	// Sending records one per channel operation made the handoffs cost more than the merge.
 	mergeBatchSize = 1024
@@ -60,7 +62,7 @@ func (s *GenericSorter[E]) putChunk(c *genericChunk[E]) {
 // memoryPools holds sync.Pool instances for memory reuse
 type memoryPools struct {
 	chunkPool   sync.Pool // *chunk objects
-	slicePool   sync.Pool // []any slices
+	slicePool   sync.Pool // []E slices
 	scratchPool sync.Pool // scratch buffers for binary encoding
 }
 
@@ -120,11 +122,11 @@ func (s *GenericSorter[E]) initMemoryPools() *memoryPools {
 		},
 	}
 
-	// Pool for slices - store pointers to slices
+	// Pool for slices - store pointers to slices. New slices start empty and
+	// buildChunks grows them, so a small input does not allocate a full ChunkSize slice.
 	pools.slicePool = sync.Pool{
 		New: func() any {
-			slice := make([]E, 0, s.config.ChunkSize)
-			return &slice
+			return new([]E)
 		},
 	}
 
@@ -271,6 +273,9 @@ func (s *GenericSorter[E]) closeTempFiles() {
 func (s *GenericSorter[E]) buildChunks() error {
 	defer close(s.chunkChan) // if this is not called on error, causes a deadlock
 
+	// Set once a chunk fills: the input spans several chunks, so new chunk slices
+	// are allocated at their full size instead of grown.
+	spansChunks := false
 	for inputOpen := true; inputOpen; {
 		c := s.getChunk()
 	fill:
@@ -297,7 +302,13 @@ func (s *GenericSorter[E]) buildChunks() error {
 				inputOpen = false
 				break fill
 			}
+			if len(c.data) == cap(c.data) {
+				c.data = s.growChunk(c.data, spansChunks)
+			}
 			c.data = append(c.data, rec)
+		}
+		if len(c.data) == s.config.ChunkSize {
+			spansChunks = true
 		}
 		if len(c.data) == 0 {
 			// the chunk is empty, return it to pool
@@ -315,6 +326,19 @@ func (s *GenericSorter[E]) buildChunks() error {
 	}
 
 	return nil
+}
+
+// growChunk returns data with room for at least one more record, up to ChunkSize. The first
+// chunk doubles from firstChunkCap, so a small input only allocates what it needs; once the
+// input has filled a chunk (full), a chunk grows straight to ChunkSize.
+func (s *GenericSorter[E]) growChunk(data []E, full bool) []E {
+	newCap := s.config.ChunkSize
+	if !full {
+		newCap = min(newCap, max(2*cap(data), firstChunkCap))
+	}
+	grown := make([]E, len(data), newCap) // exact capacity: append could grow past ChunkSize
+	copy(grown, data)
+	return grown
 }
 
 // sortChunks is a worker for sorting the data stored in a chunk prior to save
