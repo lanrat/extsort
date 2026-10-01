@@ -59,7 +59,8 @@ func BenchmarkPeekUpdate(b *testing.B) {
 	}
 	b.ReportAllocs()
 	for b.Loop() {
-		q.Peek().next += 64
+		s := q.Peek()
+		s.next += 64
 		q.PeekUpdate()
 	}
 }
